@@ -11,11 +11,7 @@ library(tidyr)
 library(stringr)
 
 ##################### TO DO #####################
-# 1) DONE! -  rename the variables on all 3 cohorts to have the exact same name on the same measurements (e.g. weight <> cweight)
-# in order for the function to run "assign_anthro_scores"   -  DONE!
-# 2) DONE! -  make the "assigne_antrhoplus_zscores function -  DONE!
-# 3) go on with further tasks from the word 
-# 4) tell Marianna about covariates mother smoking, bmi, socioeconomic status, activity level, 
+#  tell Marianna about covariates mother smoking, bmi, socioeconomic status, activity level, 
 
 
 
@@ -170,9 +166,6 @@ obesity_RHEA <- assign_anthro_scores(obesity_RHEA)
 # calculate generate z-scores for weight, height, BMI according to WHO 5-19 years old
 
 
-
-
-
 assign_anthroplus_scores <- function(df) {
   rows <- !is.na(df$agecd_cgrowth) & df$agecd_cgrowth > 1826
   
@@ -206,6 +199,9 @@ obesity_RHEA <- assign_anthroplus_scores(obesity_RHEA)
 
 
 
+
+# function that finds and removes implausible values (±5 SDs) removes the whole row if all z scores are implausible values. 
+# Creates a exclusion log for each dataset with h_id and values excluded.
 
 
 clean_zscores <- function(df) {
@@ -271,6 +267,92 @@ clean_zscores <- function(df) {
 clean_zscores(obesity_BiB)
 clean_zscores(obesity_INMA)
 clean_zscores(obesity_RHEA)
+
+
+
+# function to classify children as Normal, Overweight, Obese based on z score , depending on age < 5 and age > 5
+
+
+
+classify_bmi_category <- function(df) {
+  df <- df %>%
+    mutate(
+      bmi_category = case_when(
+        is.na(agecd_cgrowth) | is.na(bmi_zscore) ~ NA_character_,
+        
+        # Under 5 years
+        agecd_cgrowth <= 1826 & bmi_zscore < 2 ~ "Normal",
+        agecd_cgrowth <= 1826 & bmi_zscore >= 2 & bmi_zscore < 3 ~ "Overweight",
+        agecd_cgrowth <= 1826 & bmi_zscore >= 3 ~ "Obese",
+        
+        # 5 years and older
+        agecd_cgrowth > 1826 & bmi_zscore < -3 ~ "Severely thin",
+        agecd_cgrowth > 1826 & bmi_zscore >= -3 & bmi_zscore < -2 ~ "Thin",
+        agecd_cgrowth > 1826 & bmi_zscore >= -2 & bmi_zscore <= 1 ~ "Normal",
+        agecd_cgrowth > 1826 & bmi_zscore > 1 & bmi_zscore <= 2 ~ "Overweight",
+        agecd_cgrowth > 1826 & bmi_zscore > 2 ~ "Obese",
+        
+        TRUE ~ NA_character_
+      )
+    )
+  
+  return(df)
+}
+
+
+obesity_BiB <- classify_bmi_category(obesity_BiB)
+obesity_INMA <- classify_bmi_category(obesity_INMA)
+obesity_RHEA <- classify_bmi_category(obesity_RHEA)
+
+
+
+
+
+# indetify central obesity for children over 4 years of age.  
+
+classify_central_obesity <- function(df) {
+  df <- df %>%
+    mutate(
+      whtr = cabdo / cheight,  # assumes waist and height are in cm
+      central_obesity = case_when(
+        is.na(agecd_cgrowth) | is.na(cabdo) | is.na(cheight) ~ NA,
+        agecd_cgrowth < 1460 ~ NA,  # under 4 years, not applicable
+        whtr >= 0.5 ~ TRUE,
+        whtr < 0.5 ~ FALSE,
+        TRUE ~ NA
+      )
+    )
+  
+  return(df)
+}
+
+
+obesity_BiB <- classify_central_obesity(obesity_BiB)
+obesity_INMA <- classify_central_obesity(obesity_INMA)
+obesity_RHEA <- classify_central_obesity(obesity_RHEA)
+
+
+
+
+# function to classify stunted using height for age z-score
+
+classify_stunting <- function(df) {
+  df <- df %>%
+    mutate(
+      stunted = case_when(
+        is.na(height_zscore) ~ NA,
+        height_zscore < -2 ~ TRUE,
+        height_zscore >= -2 ~ FALSE
+      )
+    )
+  
+  return(df)
+}
+
+obesity_BiB <- classify_stunting(obesity_BiB)
+obesity_INMA <- classify_stunting(obesity_INMA)
+obesity_RHEA <- classify_stunting(obesity_RHEA)
+
 
 
 
