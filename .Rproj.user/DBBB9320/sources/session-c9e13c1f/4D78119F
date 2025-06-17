@@ -1,19 +1,17 @@
 {
-    "id": "6C3D4883",
-    "path": "C:/Users/grigoris.kalampoukas/MScThesis/MScTH_rscript.R",
-    "project_path": null,
+    "id": "4D78119F",
+    "path": "C:/Users/grigoris.kalampoukas/MScThesis/thesis/MScTH_rscript.R",
+    "project_path": "MScTH_rscript.R",
     "type": "r_source",
-    "hash": "2400676451",
+    "hash": "0",
     "contents": "",
     "dirty": false,
-    "created": 1750159377505.0,
+    "created": 1750161630213.0,
     "source_on_save": false,
     "relative_order": 1,
     "properties": {
         "source_window_id": "",
-        "Source": "Source",
-        "cursorPosition": "0,0",
-        "scrollLine": "0"
+        "Source": "Source"
     },
     "folds": "",
     "lastKnownWriteTime": 1750157088,
