@@ -21,14 +21,14 @@ library(stringr)
 # data loading
 
 # anthropometric data
-obesity_BiB <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_BiB.dta")
-obesity_RHEA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_RHEA.dta")
-obesity_INMA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_INMA.dta")
+obesity_BiB <- read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_obesity_BiB.dta")
+obesity_RHEA <-  read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_obesity_RHEA.dta")
+obesity_INMA <-  read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_obesity_INMA.dta")
 
 # serological data
-serology_BiB <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_Bib.dta")
-serology_RHEA <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_Rhea.dta")
-serology_INMA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_INMA.dta")
+serology_BiB <- read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_serology_Bib.dta")
+serology_RHEA <- read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_serology_Rhea.dta")
+serology_INMA <-  read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_serology_INMA.dta")
 
 
 #backups 
@@ -74,29 +74,29 @@ obesity_RHEA <- obesity_RHEA %>%
 
 # make all columns of same variables have the same name
 obesity_INMA <- obesity_INMA %>%
-                              rename(
-                                agecd_cgrowth = height_age,
-                                cheight = height_,
-                                agecm_cgrowth = age_months,
-                                agecy_cgrowth = age_years,
-                                cweight = weight_,
-                                cabdo = waistcirc_,
-                                csubscap = subscapsf_,
-                                ctriceps = tricepsf_
-                                    )
+  rename(
+    agecd_cgrowth = height_age,
+    cheight = height_,
+    agecm_cgrowth = age_months,
+    agecy_cgrowth = age_years,
+    cweight = weight_,
+    cabdo = waistcirc_,
+    csubscap = subscapsf_,
+    ctriceps = tricepsf_
+  )
 
 
 
 
 obesity_RHEA <- obesity_RHEA %>%
-                              rename(
-                                agecd_cgrowth = weight_age,
-                                cheight = height_,
-                                cweight = weight_,
-                                cabdo = waistcirc_,
-                                csubscap = subscapsf_,
-                                ctriceps = tricepsf_
-                                    )
+  rename(
+    agecd_cgrowth = weight_age,
+    cheight = height_,
+    cweight = weight_,
+    cabdo = waistcirc_,
+    csubscap = subscapsf_,
+    ctriceps = tricepsf_
+  )
 
 # calculate RHEA measurment age in months and years
 obesity_RHEA$agecm_cgrowth <- round(obesity_RHEA$agecd_cgrowth / 30.4375, 0)
@@ -354,6 +354,61 @@ obesity_INMA <- classify_stunting(obesity_INMA)
 obesity_RHEA <- classify_stunting(obesity_RHEA)
 
 
+
+
+# transform serology_BiB from wide to long format
+longify_serology <- function(df) {
+  # find columns with timepoints (ending in digits)
+  measurement_cols <- names(df) %>%
+    str_subset("\\d+$")
+  
+  # extract variable roots (e.g., CMV_pp150_norm)
+  variable_roots <- measurement_cols %>%
+    str_extract("^[^\\d]+") %>%
+    unique()
+  
+  # create regex pattern for pivoting
+  pattern_regex <- paste0("^(", paste(variable_roots, collapse = "|"), ")(\\d+)$")
+  
+  # pivot longer and drop rows where all measurement variables are NA
+  df_long <- df %>%
+    pivot_longer(
+      cols = all_of(measurement_cols),
+      names_to = c(".value", "timepoint"),
+      names_pattern = pattern_regex
+    ) %>%
+    {
+      existing_vars <- intersect(variable_roots, names(.))
+      filter(., !if_all(all_of(existing_vars), is.na))
+    }
+  
+  return(df_long)
+}
+
+
+
+serology_BiB <- longify_serology(serology_BiB)
+serology_INMA <- longify_serology(serology_INMA)
+serology_RHEA <- longify_serology(serology_RHEA)
+
+
+# calculate age in days for all cohorts
+
+serology_BiB$age_days <- serology_BiB$age * 365
+serology_INMA$age_days <- serology_INMA$age * 365
+serology_RHEA$age_days <- serology_RHEA$age * 365
+
+
+# drop row if all values from date to the right are NA
+
+serology_BiB <- serology_BiB %>%
+  filter(rowSums(!is.na(select(., date:last_col()))) > 0)
+
+serology_INMA <- serology_INMA %>%
+  filter(rowSums(!is.na(select(., date:last_col()))) > 0)
+
+serology_RHEA <- serology_RHEA %>%
+  filter(rowSums(!is.na(select(., date:last_col()))) > 0)
 
 
 
