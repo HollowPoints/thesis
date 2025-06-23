@@ -10,8 +10,16 @@ library(dplyr)
 library(tidyr)
 library(stringr)
 
+# commands to push rscript changes to git hub
+# git init
+# git add MScTH_rscript.R
+# git push origin main
+
+
+
+
+
 ##################### TO DO #####################
-#  tell Marianna about covariates mother smoking, bmi, socioeconomic status, activity level, 
 
 
 
@@ -21,16 +29,14 @@ library(stringr)
 # data loading
 
 # anthropometric data
-obesity_BiB <- read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_obesity_BiB.dta")
-obesity_RHEA <-  read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_obesity_RHEA.dta")
-obesity_INMA <-  read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_obesity_INMA.dta")
+obesity_BiB <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_BiB.dta")
+obesity_RHEA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_RHEA.dta")
+obesity_INMA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_INMA.dta")
 
 # serological data
-serology_BiB <- read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_serology_Bib.dta")
-serology_RHEA <- read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_serology_Rhea.dta")
-serology_INMA <-  read_dta("D:/Downloads Real/e96b48659b0ab47234568b3faee1d9a8/Grigoris/marato_serology_INMA.dta")
-
-
+serology_BiB <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_Bib.dta")
+serology_RHEA <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_Rhea.dta")
+serology_INMA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_INMA.dta")
 #backups 
 
 bckp_obesity_BiB <- obesity_BiB
@@ -412,4 +418,69 @@ serology_RHEA <- serology_RHEA %>%
 
 
 
+
+# function for last poinmt
+
+match_growth_to_serology <- function(
+    serology,
+    obesity,
+    anthropo_vars = c("cweight", "cheight", "cbmi", "cabdo", "csubscap", "ctriceps", "cthigh"),
+    cutoff_days = 180
+) {
+  library(dplyr)
+  
+  # Add original row index for matching
+  obesity <- obesity %>%
+    mutate(orig_row = row_number())
+  
+  # Count how many anthropometric variables are present per row
+  count_anthro <- function(df) {
+    rowSums(!is.na(df[, anthropo_vars, drop=FALSE]))
+  }
+  
+  obesity <- obesity %>%
+    mutate(
+      anthro_count = count_anthro(.)
+    ) %>%
+    filter(anthro_count > 0)
+  
+  matched_indices <- integer(nrow(serology))
+  matched_indices[] <- NA_integer_
+  
+  for (i in seq_len(nrow(serology))) {
+    ser_row <- serology[i, ]
+    ser_age <- ser_row$age_days
+    ser_cid <- ser_row$h_id
+    
+    if (is.na(ser_age)) next
+    
+    candidates <- obesity %>%
+      filter(h_id == ser_cid) %>%
+      mutate(age_diff = abs(agecd_cgrowth - ser_age)) %>%
+      filter(age_diff <= cutoff_days)
+    
+    if (nrow(candidates) == 0) next
+    
+    candidates <- candidates %>%
+      arrange(desc(anthro_count), age_diff)
+    
+    best_match <- candidates[1, ]
+    matched_indices[i] <- best_match$orig_row
+  }
+  
+  serology$matched_growth_row <- matched_indices
+  
+  # Now merge anthropometric data from obesity into serology by matched_growth_row
+  matched_growth_data <- obesity %>%
+    select(orig_row, all_of(anthropo_vars))
+  
+  # Join by matched_growth_row == orig_row
+  serology_merged <- serology %>%
+    left_join(matched_growth_data, by = c("matched_growth_row" = "orig_row"))
+  
+  return(serology_merged)
+}
+
+
+serology_BiB <- match_growth_to_serology(serology_BiB, obesity_BiB, cutoff_days = 180)
 
