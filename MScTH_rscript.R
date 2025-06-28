@@ -16,10 +16,11 @@ library(stringr)
 # git push origin main
 
 
+# TO DO
 
-
-
-##################### TO DO #####################
+## code book
+## fix function priority to BMI ## DONE !
+## age days of serology measurment and age days of antrhopometry measurment on serology final dataset ## DONE!
 
 
 
@@ -107,6 +108,7 @@ obesity_RHEA <- obesity_RHEA %>%
 # calculate RHEA measurment age in months and years
 obesity_RHEA$agecm_cgrowth <- round(obesity_RHEA$agecd_cgrowth / 30.4375, 0)
 obesity_RHEA$agecy_cgrowth <- round(obesity_RHEA$agecm_cgrowth /12, 0)
+obesity_RHEA$cbmi <- obesity_RHEA$cweight / (obesity_RHEA$cheight ^ 2)
 
 
 
@@ -360,23 +362,18 @@ obesity_INMA <- classify_stunting(obesity_INMA)
 obesity_RHEA <- classify_stunting(obesity_RHEA)
 
 
-
-
-# transform serology_BiB from wide to long format
-longify_serology <- function(df) {
-  # find columns with timepoints (ending in digits)
-  measurement_cols <- names(df) %>%
-    str_subset("\\d+$")
+longify_serology_0_4 <- function(df) {
+  # match variables ending in a digit (0–4)
+  measurement_cols <- names(df) %>% str_subset("\\d$")
   
-  # extract variable roots (e.g., CMV_pp150_norm)
+  # extract roots (everything except last digit)
   variable_roots <- measurement_cols %>%
-    str_extract("^[^\\d]+") %>%
+    str_remove("\\d$") %>%
     unique()
   
-  # create regex pattern for pivoting
-  pattern_regex <- paste0("^(", paste(variable_roots, collapse = "|"), ")(\\d+)$")
+  # build regex pattern to split root and timepoint
+  pattern_regex <- paste0("^(", paste(variable_roots, collapse = "|"), ")([0-4])$")
   
-  # pivot longer and drop rows where all measurement variables are NA
   df_long <- df %>%
     pivot_longer(
       cols = all_of(measurement_cols),
@@ -386,54 +383,70 @@ longify_serology <- function(df) {
     {
       existing_vars <- intersect(variable_roots, names(.))
       filter(., !if_all(all_of(existing_vars), is.na))
-    }
+    } %>%
+    filter(fup_ == 1)
   
   return(df_long)
 }
 
 
-
-serology_BiB <- longify_serology(serology_BiB)
-serology_INMA <- longify_serology(serology_INMA)
-serology_RHEA <- longify_serology(serology_RHEA)
-
-
-# calculate age in days for all cohorts
-
-serology_BiB$age_days <- serology_BiB$age * 365
-serology_INMA$age_days <- serology_INMA$age * 365
-serology_RHEA$age_days <- serology_RHEA$age * 365
+serology_BiB <- longify_serology_0_4(serology_BiB)
+serology_INMA <- longify_serology_0_4(serology_INMA)
+serology_RHEA <- longify_serology_0_4(serology_RHEA)
 
 
-# drop row if all values from date to the right are NA
+# calculate age in days for all cohorts, and place the new column next to measurment date
 
 serology_BiB <- serology_BiB %>%
-  filter(rowSums(!is.na(select(., date:last_col()))) > 0)
+  mutate(age_days = age * 365) %>%
+  relocate(age_days, .after = 10)
 
 serology_INMA <- serology_INMA %>%
-  filter(rowSums(!is.na(select(., date:last_col()))) > 0)
+  mutate(age_days = age * 365) %>%
+  relocate(age_days, .after = 10)
 
 serology_RHEA <- serology_RHEA %>%
-  filter(rowSums(!is.na(select(., date:last_col()))) > 0)
+  mutate(age_days = age * 365) %>%
+  relocate(age_days, .after = 10)
 
 
 
 
-# function for last poinmt
 
+# function to match obesity data to serology data
+# for each serology timepoint measurment the functions finds the best match
+# based on BMI existence, then other antrho variables count("cabdo", "csubscap", "ctriceps") 
+# and finally by measuremnt age difference with a cuttoff of 60 days.
 match_growth_to_serology <- function(
     serology,
     obesity,
-    anthropo_vars = c("cweight", "cheight", "cbmi", "cabdo", "csubscap", "ctriceps", "cthigh"),
-    cutoff_days = 180
+    anthropo_vars = c("cbmi", "cabdo", "csubscap", "ctriceps"),
+    extra_vars = c(
+      "sex",
+      "agecd_cgrowth",
+      "cheight",
+      "agecm_cgrowth",
+      "agecy_cgrowth",
+      "cweight",
+      "cabdo",
+      "csubscap",
+      "ctriceps",
+      "bmi_zscore",
+      "weight_zscore",
+      "height_zscore",
+      "tris_zscore",
+      "subscap_zscore",
+      "bmi_category",
+      "whtr",
+      "central_obesity",
+      "stunted"
+    ),
+    cutoff_days = 60
 ) {
-  library(dplyr)
   
-  # Add original row index for matching
   obesity <- obesity %>%
     mutate(orig_row = row_number())
   
-  # Count how many anthropometric variables are present per row
   count_anthro <- function(df) {
     rowSums(!is.na(df[, anthropo_vars, drop=FALSE]))
   }
@@ -447,6 +460,8 @@ match_growth_to_serology <- function(
   matched_indices <- integer(nrow(serology))
   matched_indices[] <- NA_integer_
   
+  debug_matches <- list()
+  
   for (i in seq_len(nrow(serology))) {
     ser_row <- serology[i, ]
     ser_age <- ser_row$age_days
@@ -456,31 +471,73 @@ match_growth_to_serology <- function(
     
     candidates <- obesity %>%
       filter(h_id == ser_cid) %>%
-      mutate(age_diff = abs(agecd_cgrowth - ser_age)) %>%
+      mutate(age_diff = ceiling(abs(agecd_cgrowth - ser_age))) %>%
       filter(age_diff <= cutoff_days)
     
     if (nrow(candidates) == 0) next
     
     candidates <- candidates %>%
-      arrange(desc(anthro_count), age_diff)
+      mutate(
+        cbmi_present = !is.na(cbmi),
+        other_anthro_count = rowSums(!is.na(select(., setdiff(anthropo_vars, "cbmi"))))
+      ) %>%
+      arrange(
+        desc(cbmi_present),
+        desc(other_anthro_count),
+        age_diff
+      )
     
     best_match <- candidates[1, ]
     matched_indices[i] <- best_match$orig_row
+    
+    debug_matches[[length(debug_matches) + 1]] <- candidates %>%
+      mutate(serology_row = i, matched = (orig_row == best_match$orig_row))
   }
   
   serology$matched_growth_row <- matched_indices
   
-  # Now merge anthropometric data from obesity into serology by matched_growth_row
-  matched_growth_data <- obesity %>%
-    select(orig_row, all_of(anthropo_vars))
+  # Select all required variables for merging
+  vars_to_select <- unique(c("orig_row", extra_vars, anthropo_vars))
   
-  # Join by matched_growth_row == orig_row
+  matched_growth_data <- obesity %>%
+    select(all_of(vars_to_select))
+  
+  # Merge with serology
   serology_merged <- serology %>%
     left_join(matched_growth_data, by = c("matched_growth_row" = "orig_row"))
+  
+  # Insert extra_vars then anthropo_vars after 12th column
+  insert_after <- 12
+  original_cols <- names(serology)
+  new_extra <- setdiff(extra_vars, original_cols)
+  new_anthro <- setdiff(anthropo_vars, original_cols)
+  
+  insert_order <- append(
+    names(serology_merged)[1:insert_after],
+    c(new_extra, new_anthro),
+    after = insert_after
+  )
+  
+  final_cols <- unique(c(insert_order, names(serology_merged)))  # ensure all columns are included
+  
+  serology_merged <- serology_merged[, final_cols]
   
   return(serology_merged)
 }
 
 
-serology_BiB <- match_growth_to_serology(serology_BiB, obesity_BiB, cutoff_days = 180)
+
+
+data_BiB <- match_growth_to_serology(serology_BiB, obesity_BiB, cutoff_days = 60)
+data_INMA <- match_growth_to_serology(serology_INMA, obesity_INMA, cutoff_days = 60)
+data_RHEA <- match_growth_to_serology(serology_RHEA, obesity_RHEA, cutoff_days = 60)
+
+complete_data <- bind_rows(data_BiB, data_INMA, data_RHEA)
+
+
+
+
+
+
+
 
