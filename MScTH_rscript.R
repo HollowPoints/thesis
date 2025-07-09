@@ -280,7 +280,7 @@ age_diff_summary <- complete_data %>%
     .groups = "drop"
   )
 
-age_diff_summary
+
 
 
 
@@ -289,7 +289,7 @@ age_diff_summary
 
 
 
-gt_tabble <- complete_data %>%
+cohort_order_table <- complete_data %>%
   mutate(cohort_label = case_when(
     coh == 1 ~ "BiB",
     coh == 2 ~ "INMA",
@@ -308,7 +308,17 @@ gt_tabble <- complete_data %>%
     Heightz_Mean = mean(height_zscore, na.rm = TRUE),
     Heightz_SD = sd(height_zscore, na.rm = TRUE),
     WHtR_Mean = mean(whtr, na.rm = TRUE),
-    WHtR_SD = sd(whtr, na.rm = TRUE)
+    WHtR_SD = sd(whtr, na.rm = TRUE),
+    
+    CMV_Positive = sum(CMV_class == 1, na.rm = TRUE),
+    VZV_Positive = sum(cut_VZV == 1, na.rm = TRUE),
+    ADV36_Positive = sum(cut_Avd36 == 1, na.rm = TRUE),
+    EBV_Positive = sum(EBV_class == 1, na.rm = TRUE),
+    BK_Positive = sum(cut_BK == 1, na.rm = TRUE),
+    JC_Positive = sum(cut_JC == 1, na.rm = TRUE),
+    KI_Positive = sum(cut_KI == 1, na.rm = TRUE),
+    WU_Positive = sum(cut_WU == 1, na.rm = TRUE),
+    MCV_Positive = sum(cut_MCV == 1, na.rm = TRUE)
   ) %>%
   gt() %>%
   tab_header(
@@ -323,5 +333,208 @@ gt_tabble <- complete_data %>%
     columns = c(BMI_Mean, BMI_SD, BMIz_Mean, BMIz_SD, Heightz_Mean, Heightz_SD, WHtR_Mean, WHtR_SD),
     decimals = 2
   ) %>%
-  cols_label(cohort_label = "Cohort") %>%
+  cols_label(
+    cohort_label = "Cohort",
+    CMV_Positive = "CMV Positive",
+    VZV_Positive = "VZV Positive",
+    ADV36_Positive = "ADV-36 Positive",
+    EBV_Positive = "EBV Positive",
+    BK_Positive = "BK Positive",
+    JC_Positive = "JC Positive",
+    KI_Positive = "KI Positive",
+    WU_Positive = "WU Positive",
+    MCV_Positive = "MCV Positive"
+  ) %>%
   tab_source_note(source_note = "Source: BiB, INMA, RHEA Cohorts")
+
+
+
+
+age_order_table <- complete_data %>%
+  group_by(timepoint) %>%
+  summarise(
+    N = n(),
+    Male = sum(sex == 1, na.rm = TRUE),
+    Female = sum(sex == 2, na.rm = TRUE),
+    
+    BMI_Mean = mean(cbmi, na.rm = TRUE),
+    BMI_SD = sd(cbmi, na.rm = TRUE),
+    
+    BMIz_Mean = mean(bmi_zscore, na.rm = TRUE),
+    BMIz_SD = sd(bmi_zscore, na.rm = TRUE),
+    
+    Heightz_Mean = mean(height_zscore, na.rm = TRUE),
+    Heightz_SD = sd(height_zscore, na.rm = TRUE),
+    
+    WHtR_Mean = mean(whtr, na.rm = TRUE),
+    WHtR_SD = sd(whtr, na.rm = TRUE),
+    
+    CMV_Positive = mean(CMV_class == 1, na.rm = TRUE) * 100,
+    VZV_Positive = mean(cut_VZV == 1, na.rm = TRUE) * 100,
+    ADV36_Positive = mean(cut_Avd36 == 1, na.rm = TRUE) * 100,
+    EBV_Positive = mean(EBV_class == 1, na.rm = TRUE) * 100,
+    BK_Positive = mean(cut_BK == 1, na.rm = TRUE) * 100,
+    JC_Positive = mean(cut_JC == 1, na.rm = TRUE) * 100,
+    KI_Positive = mean(cut_KI == 1, na.rm = TRUE) * 100,
+    WU_Positive = mean(cut_WU == 1, na.rm = TRUE) * 100,
+    MCV_Positive = mean(cut_MCV == 1, na.rm = TRUE) * 100
+  ) %>%
+  arrange(timepoint) %>%
+  mutate(timepoint_label = case_when(
+    timepoint == 0 ~ "Pregnancy/Birth",
+    timepoint == 1 ~ "2 Years",
+    timepoint == 2 ~ "4–6 Years",
+    timepoint == 3 ~ "6–9 Years",
+    timepoint == 4 ~ "11 Years",
+    TRUE ~ as.character(timepoint)
+  )) %>%
+  select(timepoint_label, everything(), -timepoint) %>%
+  gt() %>%
+  tab_header(
+    title = "Anthropometry and Seropositivity by Timepoint",
+    subtitle = "Combined Descriptives Across Follow-Up Periods"
+  ) %>%
+  tab_spanner(label = "BMI", columns = c(BMI_Mean, BMI_SD)) %>%
+  tab_spanner(label = "BMI z-score", columns = c(BMIz_Mean, BMIz_SD)) %>%
+  tab_spanner(label = "Height z-score", columns = c(Heightz_Mean, Heightz_SD)) %>%
+  tab_spanner(label = "Waist-to-Height Ratio", columns = c(WHtR_Mean, WHtR_SD)) %>%
+  tab_spanner(label = "Seropositivity (%)", 
+              columns = c(CMV_Positive, VZV_Positive, ADV36_Positive, EBV_Positive,
+                          BK_Positive, JC_Positive, KI_Positive, WU_Positive, MCV_Positive)) %>%
+  fmt_number(
+    columns = c(BMI_Mean, BMI_SD, BMIz_Mean, BMIz_SD,
+                Heightz_Mean, Heightz_SD, WHtR_Mean, WHtR_SD,
+                CMV_Positive, VZV_Positive, ADV36_Positive, EBV_Positive,
+                BK_Positive, JC_Positive, KI_Positive, WU_Positive, MCV_Positive),
+    decimals = 1
+  ) %>%
+  cols_label(
+    timepoint_label = "Timepoint",
+    N = "N",
+    Male = "Male",
+    Female = "Female",
+    BMI_Mean = "Mean",
+    BMI_SD = "SD",
+    BMIz_Mean = "Mean",
+    BMIz_SD = "SD",
+    Heightz_Mean = "Mean",
+    Heightz_SD = "SD",
+    WHtR_Mean = "Mean",
+    WHtR_SD = "SD",
+    CMV_Positive = "CMV",
+    VZV_Positive = "VZV",
+    ADV36_Positive = "ADV-36",
+    EBV_Positive = "EBV",
+    BK_Positive = "BK",
+    JC_Positive = "JC",
+    KI_Positive = "KI",
+    WU_Positive = "WU",
+    MCV_Positive = "MCV"
+  ) %>%
+  tab_source_note(source_note = "Source: BiB, INMA, RHEA longitudinal cohorts")
+
+
+
+cohort_order_table <- complete_data %>%
+  mutate(
+    cohort_label = case_when(
+      coh == 1 ~ "BiB",
+      coh == 2 ~ "INMA",
+      coh == 3 ~ "RHEA",
+      TRUE ~ as.character(coh)
+    ),
+    timepoint_label = case_when(
+      timepoint == 0 ~ "Pregnancy/Birth",
+      timepoint == 1 ~ "2 Years",
+      timepoint == 2 ~ "4–6 Years",
+      timepoint == 3 ~ "6–9 Years",
+      timepoint == 4 ~ "11 Years",
+      TRUE ~ as.character(timepoint)
+    )
+  ) %>%
+  group_by(cohort_label, timepoint) %>%
+  summarise(
+    N = n(),
+    Male = sum(sex == 1, na.rm = TRUE),
+    Female = sum(sex == 2, na.rm = TRUE),
+    
+    BMI_Mean = mean(cbmi, na.rm = TRUE),
+    BMI_SD = sd(cbmi, na.rm = TRUE),
+    
+    BMIz_Mean = mean(bmi_zscore, na.rm = TRUE),
+    BMIz_SD = sd(bmi_zscore, na.rm = TRUE),
+    
+    Heightz_Mean = mean(height_zscore, na.rm = TRUE),
+    Heightz_SD = sd(height_zscore, na.rm = TRUE),
+    
+    WHtR_Mean = mean(whtr, na.rm = TRUE),
+    WHtR_SD = sd(whtr, na.rm = TRUE),
+    
+    CMV_Positive = mean(CMV_class == 1, na.rm = TRUE) * 100,
+    VZV_Positive = mean(cut_VZV == 1, na.rm = TRUE) * 100,
+    ADV36_Positive = mean(cut_Avd36 == 1, na.rm = TRUE) * 100,
+    EBV_Positive = mean(EBV_class == 1, na.rm = TRUE) * 100,
+    BK_Positive = mean(cut_BK == 1, na.rm = TRUE) * 100,
+    JC_Positive = mean(cut_JC == 1, na.rm = TRUE) * 100,
+    KI_Positive = mean(cut_KI == 1, na.rm = TRUE) * 100,
+    WU_Positive = mean(cut_WU == 1, na.rm = TRUE) * 100,
+    MCV_Positive = mean(cut_MCV == 1, na.rm = TRUE) * 100,
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    timepoint_label = case_when(
+      timepoint == 0 ~ "Pregnancy/Birth",
+      timepoint == 1 ~ "2 Years",
+      timepoint == 2 ~ "4–6 Years",
+      timepoint == 3 ~ "6–9 Years",
+      timepoint == 4 ~ "11 Years",
+      TRUE ~ as.character(timepoint)
+    )
+  ) %>%
+  arrange(cohort_label, timepoint) %>%
+  select(cohort_label, timepoint_label, everything(), -timepoint) %>%
+  gt(groupname_col = "cohort_label") %>%
+  tab_header(
+    title = "Anthropometry and Seropositivity by Cohort and Timepoint",
+    subtitle = "Stratified Summary per Follow-Up Period"
+  ) %>%
+  tab_spanner(label = "BMI", columns = c(BMI_Mean, BMI_SD)) %>%
+  tab_spanner(label = "BMI z-score", columns = c(BMIz_Mean, BMIz_SD)) %>%
+  tab_spanner(label = "Height z-score", columns = c(Heightz_Mean, Heightz_SD)) %>%
+  tab_spanner(label = "Waist-to-Height Ratio", columns = c(WHtR_Mean, WHtR_SD)) %>%
+  tab_spanner(label = "Seropositivity (%)", 
+              columns = c(CMV_Positive, VZV_Positive, ADV36_Positive, EBV_Positive,
+                          BK_Positive, JC_Positive, KI_Positive, WU_Positive, MCV_Positive)) %>%
+  fmt_number(
+    columns = c(BMI_Mean, BMI_SD, BMIz_Mean, BMIz_SD,
+                Heightz_Mean, Heightz_SD, WHtR_Mean, WHtR_SD,
+                CMV_Positive, VZV_Positive, ADV36_Positive, EBV_Positive,
+                BK_Positive, JC_Positive, KI_Positive, WU_Positive, MCV_Positive),
+    decimals = 1
+  ) %>%
+  cols_label(
+    timepoint_label = "Timepoint",
+    N = "N",
+    Male = "Male",
+    Female = "Female",
+    BMI_Mean = "Mean",
+    BMI_SD = "SD",
+    BMIz_Mean = "Mean",
+    BMIz_SD = "SD",
+    Heightz_Mean = "Mean",
+    Heightz_SD = "SD",
+    WHtR_Mean = "Mean",
+    WHtR_SD = "SD",
+    CMV_Positive = "CMV",
+    VZV_Positive = "VZV",
+    ADV36_Positive = "ADV-36",
+    EBV_Positive = "EBV",
+    BK_Positive = "BK",
+    JC_Positive = "JC",
+    KI_Positive = "KI",
+    WU_Positive = "WU",
+    MCV_Positive = "MCV"
+  ) %>%
+  tab_source_note(source_note = "Stratified by cohort and timepoint (BiB, INMA, RHEA)")
+
