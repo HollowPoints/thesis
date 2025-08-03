@@ -349,3 +349,213 @@ match_growth_to_serology <- function(
   
   return(serology_merged)
 }
+
+
+
+
+
+
+
+
+
+
+
+norm_histograms <- function(data, var_name) {
+  
+  
+  # Dynamically select the variable using .data pronoun
+  cohorts_with_data <- data %>%
+    group_by(coh) %>%
+    filter(!is.na(.data[[var_name]])) %>%
+    distinct(coh) %>%
+    pull(coh)
+  
+  filtered_data <- data %>%
+    filter(coh %in% cohorts_with_data, !is.na(.data[[var_name]])) %>%
+    mutate(
+      cohort_label = case_when(
+        coh == 1 ~ "BiB",
+        coh == 2 ~ "INMA",
+        coh == 3 ~ "RHEA",
+        TRUE ~ as.character(coh)
+      )
+    )
+  
+  ggplot(filtered_data, aes(x = .data[[var_name]])) +
+    geom_histogram(binwidth = 0.5, color = "black", fill = "skyblue") +
+    facet_wrap(~ cohort_label, scales = "free_y") +
+    labs(
+      title = paste("Distribution of", var_name, "by Cohort"),
+      x = var_name,
+      y = "Count"
+    ) +
+    theme_minimal()
+}
+
+
+
+
+
+
+scatter_by_cohort <- function(data, x, y) {
+  # Keep only rows with non-missing x and y
+  filtered_data <- data %>%
+    filter(!is.na(.data[[x]]), !is.na(.data[[y]])) %>%
+    mutate(
+      cohort_label = case_when(
+        coh == 1 ~ "BiB",
+        coh == 2 ~ "INMA",
+        coh == 3 ~ "RHEA",
+        TRUE ~ as.character(coh)
+      )
+    )
+  
+  ggplot(filtered_data, aes(x = .data[[x]], y = .data[[y]])) +
+    geom_point(alpha = 0.6, color = "steelblue") +
+    facet_wrap(~ cohort_label, scales = "free") +
+    labs(
+      title = paste("Scatter Plot of", y, "vs", x, "by Cohort"),
+      x = x,
+      y = y
+    ) +
+    theme_minimal()
+}
+
+
+
+# shapiro normality test
+
+shapiro_by_group <- function(data, variable, min_n = 3) {
+  var_sym <- sym(variable)
+  
+  data %>%
+    filter(timepoint != 0) %>%
+    group_by(timepoint, coh) %>%
+    group_split() %>%
+    map_dfr(~{
+      df <- .
+      n_valid <- sum(!is.na(df[[variable]]))
+      
+      if (n_valid >= min_n) {
+        p_val <- shapiro.test(df[[variable]])$p.value
+      } else {
+        p_val <- NA_real_
+      }
+      
+      tibble(
+        timepoint = unique(df$timepoint),
+        coh = unique(df$coh),
+        n = n_valid,
+        p_value = if (!is.na(p_val)) sprintf("%.3f", p_val) else NA_character_
+      )
+    })
+}
+
+
+# non-parametric mann-whitney-wilcoxon test, for mean difference(numeric variables) for 2 unrelated groups 
+
+mann_whitney_plot <- function(data, var, timepoint_val, cohort1, cohort2) {
+  filtered <- dplyr::filter(
+    data,
+    timepoint == timepoint_val,
+    coh %in% c(cohort1, cohort2),
+    !is.na(.data[[var]])
+  ) %>%
+    dplyr::mutate(
+      coh = factor(coh),
+      cohort_label = dplyr::case_when(
+        coh == 1 ~ "BiB",
+        coh == 2 ~ "INMA",
+        coh == 3 ~ "RHEA",
+        TRUE ~ as.character(coh)
+      )
+    )
+  
+  test_result <- wilcox.test(
+    filtered[[var]] ~ filtered$cohort_label
+  )
+  
+  plot <- ggplot(filtered, aes(x = cohort_label, y = .data[[var]], fill = cohort_label)) +
+    geom_boxplot(alpha = 0.7) +
+    labs(
+      title = paste("Comparison of", var, "at", timepoint_val),
+      x = "Cohort",
+      y = var
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  print(plot)
+  
+  return(test_result)
+}
+
+
+# non-parametric kruskal-wallis test, for mean difference(numeric variables) for over 2 unrelated groups 
+
+kruskal_wallis_plot <- function(data, var, timepoint_val, cohort_vec) {
+  filtered <- dplyr::filter(
+    data,
+    timepoint == timepoint_val,
+    coh %in% cohort_vec,
+    !is.na(.data[[var]])
+  ) %>%
+    dplyr::mutate(
+      coh = factor(coh),
+      cohort_label = dplyr::case_when(
+        coh == 1 ~ "BiB",
+        coh == 2 ~ "INMA",
+        coh == 3 ~ "RHEA",
+        TRUE ~ as.character(coh)
+      )
+    )
+  
+  test_result <- kruskal.test(
+    filtered[[var]] ~ filtered$cohort_label
+  )
+  
+  plot <- ggplot(filtered, aes(x = cohort_label, y = .data[[var]], fill = cohort_label)) +
+    geom_boxplot(alpha = 0.7) +
+    labs(
+      title = paste("Kruskal-Wallis Test for", var, "at", timepoint_val),
+      x = "Cohort",
+      y = var
+    ) +
+    theme_minimal() +
+    theme(legend.position = "none")
+  
+  print(plot)
+  
+  return(test_result)
+}
+
+
+
+
+
+
+# FUNCTION to widen the full datasets data_BiB, data_INMA, data_RHEA
+
+widen2 <- function(df_long, stable_vars = c("h_id", "m_id", "c_id", "helixid", "cohort", "coh", "n_samples"), id_col = "h_id", time_order_col = "agecd_cgrowth") {
+  df_long %>%
+    arrange(.data[[id_col]], .data[[time_order_col]]) %>%
+    group_by(.data[[id_col]]) %>%
+    mutate(seq = row_number() - 1) %>%
+    ungroup() %>%
+    pivot_wider(
+      id_cols = all_of(stable_vars),
+      names_from = seq,
+      values_from = setdiff(names(df_long), stable_vars),
+      names_glue = "{.value}_{seq}"
+    )
+}
+
+
+
+
+
+
+
+
+
+
