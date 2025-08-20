@@ -19,7 +19,7 @@ library(gtsummary)
 source("functions.R")
 # call functions script
 
-
+pdf("everything.pdf", width = 8, height = 6)
 
 
 # commands to push rscript changes to git hub
@@ -536,17 +536,36 @@ norm_histograms(complete_data, "cbmi")
 norm_histograms(complete_data, "bmi_zscore")
 norm_histograms(complete_data, "height_zscore")
 norm_histograms(complete_data, "weight_zscore")
-norm_histograms(complete_data, "whtr")
 
+
+complete_data %>%
+  filter(!is.na(whtr)) %>%
+  mutate(
+    cohort_label = case_when(
+      coh == 1 ~ "BiB",
+      coh == 2 ~ "INMA",
+      coh == 3 ~ "RHEA",
+      TRUE ~ as.character(coh)
+    )
+  ) %>%
+  ggplot(aes(x = whtr)) +
+  geom_histogram(binwidth = 0.05, color = "black", fill = "skyblue") +
+  facet_wrap(~ cohort_label, scales = "free_y") +
+  labs(
+    title = "Distribution of whtr by Cohort",
+    x = "whtr",
+    y = "Count"
+  ) +
+  theme_minimal()
 
 
 # scatter plots. distribution of variable by cohort
 
 scatter_by_cohort(complete_data, "agecm_cgrowth", "cbmi")
-scatter_by_cohort(complete_data, "bmi_zscore", "agecm_cgrowth")
-scatter_by_cohort(complete_data, "height_zscore", "agecm_cgrowth")
-scatter_by_cohort(complete_data, "weight_zscore", "agecm_cgrowth")
-scatter_by_cohort(complete_data, "whtr", "agecm_cgrowth")
+scatter_by_cohort(complete_data, "agecm_cgrowth", "bmi_zscore")
+scatter_by_cohort(complete_data, "agecm_cgrowth", "height_zscore")
+scatter_by_cohort(complete_data,"agecm_cgrowth", "weight_zscore")
+scatter_by_cohort(complete_data, "agecm_cgrowth", "whtr" )
 
 
 
@@ -564,19 +583,6 @@ norm_whtr <- shapiro_by_group(complete_data, "whtr")
 
 
 
-# levene test(not working)
-df_subset <- complete_data %>%
-  filter(timepoint == 2, !is.na(cbmi), !is.na(coh))
-leveneTest(cbmi ~ as.factor(coh), data = df_subset)
-
-
-
-
-
-# does not work completely
-df <- complete_data %>% filter(timepoint == 2, coh %in% c(2,3))
-
-t.test(bmi_zscore ~ coh, data = df, var.equal = TRUE)
 
 
 
@@ -588,7 +594,7 @@ t.test(bmi_zscore ~ coh, data = df, var.equal = TRUE)
 
 
 mann_whitney_plot(complete_data, "cbmi", 3, 2, 3)
-mann_whitney_plot(complete_data, "cbmi", 4, 2, 3)
+
 
 
 
@@ -683,7 +689,7 @@ serostatus_all_long <- bind_rows(serology_BiB, serology_INMA, serology_RHEA)
 # 6 datasets: 
 # 3 wide split by coh with everything(maybe 1 pooled wide) DONE!
 # 1 long anthropometry DONE!
-# 1 long serostatus
+# 1 long serostatus done!
 
 
 # Summary:
@@ -695,3 +701,48 @@ serostatus_all_long <- bind_rows(serology_BiB, serology_INMA, serology_RHEA)
 # serostatus_all_long = long format, all cohorts, all serology
 
 
+# make sure timepoint is numeric or factor with defined levels
+serostatus_all_long <- serostatus_all_long %>%
+  mutate(timepoint = as.numeric(timepoint))
+
+
+
+
+# define which columns to widen (everything except IDs & grouping vars)
+value_vars <- setdiff(
+  colnames(serostatus_all_long),
+  c("h_id", "m_id", "c_id", "helixid", "cohort", "coh",
+    "n_samples", "fup_", "date")   
+)
+
+serostatus_all_wide <- serostatus_all_long %>%
+  pivot_wider(
+    id_cols = h_id,
+    names_from = timepoint,
+    values_from = all_of(value_vars),
+    names_glue = "{.value}_{timepoint}",
+    names_sort = TRUE,                  # ensure 0,1,2 order
+    names_vary = "fastest"                 # consistent column order
+  )
+                                                        
+
+anthro_long_sero_wide <- obesity_all_long %>%
+  left_join(serostatus_all_wide, by = "h_id")
+
+
+
+
+## to do:
+
+# add obesity all add serostatus in wide format on each id of participant DONE!
+
+# methods, serology , obesity
+
+# read bibliography 
+
+
+
+
+
+
+dev.off()
