@@ -394,9 +394,6 @@ norm_histograms <- function(data, var_name) {
 
 
 
-
-
-
 scatter_by_cohort <- function(data, x, y) {
   # Keep only rows with non-missing x and y
   filtered_data <- data %>%
@@ -410,16 +407,22 @@ scatter_by_cohort <- function(data, x, y) {
       )
     )
   
-  ggplot(filtered_data, aes(x = .data[[x]], y = .data[[y]])) +
-    geom_point(alpha = 0.6, color = "steelblue") +
-    facet_wrap(~ cohort_label, scales = "free") +
+  ggplot(filtered_data, aes(x = .data[[x]], y = .data[[y]], color = cohort_label)) +
+    geom_point(alpha = 0.6) +
     labs(
       title = paste("Scatter Plot of", y, "vs", x, "by Cohort"),
       x = x,
-      y = y
+      y = y,
+      color = "Cohort"
     ) +
     theme_minimal()
 }
+
+
+
+
+
+
 
 
 
