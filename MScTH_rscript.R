@@ -1,5 +1,5 @@
 # Install packages
-install.packages(c("anthro", "zscorer","haven","anthroplus", "tidyr", "dplyr", "gt", "rstatix", "janitor", "purrr", "ggplot2", "gtsummary"))
+install.packages(c("anthro", "zscorer","haven","anthroplus", "tidyr", "dplyr", "gt", "rstatix", "janitor", "purrr", "ggplot2", "gtsummary","binom", "lme4"))
 
 # Library packages
 library(anthro)
@@ -15,6 +15,8 @@ library(janitor)
 library(purrr)
 library(ggplot2)
 library(gtsummary)
+library(binom)
+library(lme4)
 
 source("functions.R")
 # call functions script
@@ -62,15 +64,18 @@ pdf("everything.pdf", width = 8, height = 6)
 # data loading
 
 # anthropometric data
-obesity_BiB <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_BiB.dta")
-obesity_RHEA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_RHEA.dta")
-obesity_INMA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_INMA.dta")
+obesity_BiB <- read_dta("G:/Msc Thesis/Grigoris/marato_obesity_BiB.dta")
+obesity_RHEA <-  read_dta("G:/Msc Thesis/Grigoris/marato_obesity_RHEA.dta")
+obesity_INMA <-  read_dta("G:/Msc Thesis/Grigoris/marato_obesity_INMA.dta")
 
 # serological data
-serology_BiB <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_Bib.dta")
-serology_RHEA <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_Rhea.dta")
-serology_INMA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_INMA.dta")
-#backups 
+serology_BiB <- read_dta("G:/Msc Thesis/Grigoris/marato_serology_Bib.dta")
+serology_RHEA <- read_dta("G:/Msc Thesis/Grigoris/marato_serology_Rhea.dta")
+serology_INMA <-  read_dta("G:/Msc Thesis/Grigoris/marato_serology_INMA.dta")
+
+
+
+
 
 bckp_obesity_BiB <- obesity_BiB
 bckp_obesity_INMA <- obesity_INMA
@@ -740,6 +745,148 @@ anthro_long_sero_wide <- obesity_all_long %>%
 
 # read bibliography 
 
+
+
+
+
+
+# Model 1: BMI predicting viral infection
+model1 <- glmer(
+  cut_Avd36 ~ scale(cbmi) + age + sex + (1 | h_id),
+  data = complete_data,
+  family = binomial(link = "logit")
+)
+
+summary(model1)
+
+# Model 2: ADV36 predicting BMI
+model2 <- lmer(
+  cbmi ~ cut_Avd36 + age + sex + (1 | h_id),
+  data = complete_data,
+  
+)
+
+summary(model2)
+
+
+
+library(lme4)
+library(lmerTest)
+library(dplyr)
+library(broom.mixed)
+library(gt)
+
+# --- Virus variable names ---
+virus_vars <- c("CMV_class", "cut_VZV", "cut_Avd36", "EBV_class",
+                "cut_BK", "cut_JC", "cut_KI", "cut_WU", "cut_MCV")
+
+# --- Function to run models and format results ---
+run_bidirectional_models_table <- function(data, virus_vars) {
+  results_table <- data.frame(
+    Virus = character(),
+    Model = character(),
+    Predictor = character(),
+    Estimate = numeric(),
+    Std_Error = numeric(),
+    OR_or_Beta = numeric(),
+    z_or_t = numeric(),
+    p_value = numeric(),
+    Random_SD = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (virus in virus_vars) {
+    # Model 1: BMI -> Virus
+    formula1 <- as.formula(paste0(virus, " ~ scale(cbmi) + age + sex + (1 | h_id)"))
+    model1 <- glmer(formula1, data = data, family = binomial(link = "logit"))
+    tidy1 <- broom.mixed::tidy(model1, effects = "fixed") %>%
+      mutate(
+        z_or_t = estimate / std.error,
+        p_value = 2 * (1 - pnorm(abs(z_or_t))),
+        OR_or_Beta = exp(estimate),
+        Virus = virus,
+        Model = "BMI_to_Virus"
+      ) %>%
+      rename(Predictor = term, Estimate = estimate, Std_Error = std.error) %>%
+      select(Virus, Model, Predictor, Estimate, Std_Error, OR_or_Beta, z_or_t, p_value)
+    rand_sd1 <- as.data.frame(VarCorr(model1)) %>%
+      filter(grp == "h_id", var1 == "(Intercept)") %>%
+      pull(sdcor)
+    tidy1$Random_SD <- rand_sd1
+    
+    # Model 2: Virus -> BMI
+    formula2 <- as.formula(paste0("cbmi ~ ", virus, " + age + sex + (1 | h_id)"))
+    model2 <- lmer(formula2, data = data)
+    tidy2 <- broom.mixed::tidy(model2, effects = "fixed") %>%
+      mutate(
+        OR_or_Beta = estimate,
+        z_or_t = statistic,
+        p_value = p.value,
+        Virus = virus,
+        Model = "Virus_to_BMI"
+      ) %>%
+      rename(Predictor = term, Estimate = estimate, Std_Error = std.error) %>%
+      select(Virus, Model, Predictor, Estimate, Std_Error, OR_or_Beta, z_or_t, p_value)
+    rand_sd2 <- as.data.frame(VarCorr(model2)) %>%
+      filter(grp == "h_id", var1 == "(Intercept)") %>%
+      pull(sdcor)
+    tidy2$Random_SD <- rand_sd2
+    
+    results_table <- bind_rows(results_table, tidy1, tidy2)
+  }
+  
+  return(results_table)
+}
+
+# Run models
+all_results <- run_bidirectional_models_table(complete_data, virus_vars)
+
+# Format for display (drop raw numeric columns afterwards)
+all_results_fmt <- all_results %>%
+  mutate(
+    p_value_fmt = case_when(
+      p_value == 0 ~ "0",
+      p_value < 0.001 ~ "<0.001",
+      TRUE ~ sprintf("%.3f", p_value)
+    ),
+    OR_or_Beta_fmt = sprintf("%.2f", OR_or_Beta),
+    Estimate_fmt = sprintf("%.2f", Estimate),
+    Std_Error_fmt = sprintf("%.2f", Std_Error),
+    Random_SD_fmt = sprintf("%.2f", Random_SD)
+  ) %>%
+  # Keep only formatted + essential columns
+  select(Virus, Model, Predictor,
+         Estimate_fmt, Std_Error_fmt, OR_or_Beta_fmt,
+         p_value_fmt, Random_SD_fmt)
+
+# --- GT table ---
+results_gt <- all_results_fmt %>%
+  gt(groupname_col = "Virus") %>%
+  tab_header(
+    title = "Bidirectional Mixed Models: Viral Infections and BMI",
+    subtitle = "Estimates, Odds Ratios/Beta, Standard Errors, p-values, Random Effects SD"
+  ) %>%
+  tab_spanner(
+    label = "Fixed Effects",
+    columns = c("Predictor", "Estimate_fmt", "Std_Error_fmt", "OR_or_Beta_fmt", "p_value_fmt")
+  ) %>%
+  cols_label(
+    Predictor = "Predictor",
+    Estimate_fmt = "Estimate",
+    Std_Error_fmt = "Std. Error",
+    OR_or_Beta_fmt = "OR/Beta",
+    p_value_fmt = "p-value",
+    Random_SD_fmt = "Random SD",
+    Model = "Model Direction"
+  ) %>%
+  cols_merge(
+    columns = c("Estimate_fmt", "Std_Error_fmt"),
+    pattern = "{1} ({2})"
+  ) %>%
+  cols_move(columns = "Random_SD_fmt", after = "p_value_fmt") %>%
+  opt_table_font(font = list(google_font("Roboto")))
+
+results_gt
 
 
 
