@@ -1,6 +1,6 @@
-# Install packages
+
 install.packages(c("anthro", "zscorer","haven","anthroplus", "tidyr", "dplyr", "gt", "rstatix", "janitor", "purrr", "ggplot2", 
-                   "gtsummary","binom", "lme4", "broom.mixed", "lmerTest" , "mice"))
+                   "gtsummary","binom", "lme4", "broom.mixed", "lmerTest" , "mice", "randomForest"))
 
 # Library packages
 library(anthro)
@@ -21,7 +21,8 @@ library(lme4)
 library(lmerTest)
 library(broom.mixed)
 library(mice)
-
+library(lmerTest)
+library(randomForest)
 
 source("functions.R")
 # call functions script
@@ -69,14 +70,20 @@ pdf("everything.pdf", width = 8, height = 6)
 # data loading
 
 # anthropometric data
-obesity_BiB <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_BiB.dta")
-obesity_RHEA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_RHEA.dta")
-obesity_INMA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_obesity_INMA.dta")
+
+obesity_BiB <- read_dta("G:/Msc Thesis/Grigoris/marato_obesity_BiB.dta")
+obesity_RHEA <-  read_dta("G:/Msc Thesis/Grigoris/marato_obesity_RHEA.dta")
+obesity_INMA <-  read_dta("G:/Msc Thesis/Grigoris/marato_obesity_INMA.dta")
 
 # serological data
-serology_BiB <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_Bib.dta")
-serology_RHEA <- read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_Rhea.dta")
-serology_INMA <-  read_dta("C:/Users/grigoris.kalampoukas/MScThesis/Grigoris/marato_serology_INMA.dta")
+serology_BiB <- read_dta("G:/Msc Thesis/Grigoris/marato_serology_Bib.dta")
+serology_RHEA <- read_dta("G:/Msc Thesis/Grigoris/marato_serology_Rhea.dta")
+serology_INMA <-  read_dta("G:/Msc Thesis/Grigoris/marato_serology_INMA.dta")
+
+#cofounders
+
+confounders <- read_dta("D:/Downloads Real/variables_grigoris.dta")
+
 #backups 
 
 
@@ -258,6 +265,9 @@ serology_RHEA <- serology_RHEA %>%
 
 
 
+
+
+
 # function to match obesity data to serology data
 # for each serology timepoint measurment the functions finds the best match
 # based on BMI existence, then other antrho variables count("cabdo", "csubscap", "ctriceps") 
@@ -280,6 +290,18 @@ complete_data <- complete_data[complete_data$timepoint != 0, ]
 
 # drop fup_ column as it does not add any information
 complete_data <- complete_data %>% select(-fup_)
+
+# make sex as factor
+complete_data$sex <- factor(
+  complete_data$sex,
+  levels = c(1, 2),
+  labels = c("Male", "Female")
+)
+
+# Convert coh to factor with labeled levels
+complete_data$coh <- factor(complete_data$coh,
+                               levels = c(1, 2, 3),
+                               labels = c("BIB", "INMA", "RHE"))
 
 
 
@@ -355,12 +377,76 @@ na_sum_table_INMA <- bind_rows(main_summary, total_sample_row)
 
 #### DESCRIPTIVE STATISTICS #### 
 
+anthro_long_sero_wide <- anthro_long_sero_wide %>%
+  rename(sex = sex.y) %>%
+  mutate(
+    sex = factor(sex, levels = c(1,2), labels = c("Male", "Female")),
+    # create timepoint based on age
+    timepoint = case_when(
+      age >= 1.5 & age < 3.5  ~ 1,
+      age >= 4   & age < 6  ~ 2,
+      age >= 6   & age < 10 ~ 3,
+      age >= 10  & age <= 12 ~ 4,
+      TRUE ~ NA_real_
+    ),
+    timepoint_label = case_when(
+      timepoint == 1 ~ "2 Years",
+      timepoint == 2 ~ "4–6 Years",
+      timepoint == 3 ~ "6–9 Years",
+      timepoint == 4 ~ "11 Years",
+      TRUE ~ as.character(timepoint)
+    )
+  )
+
+
+summary_stats <- serostatus_all_long %>%
+  group_by(timepoint) %>%
+  summarise(
+    median_age = median(age, na.rm = TRUE),
+    min_age = min(age, na.rm = TRUE),
+    max_age = max(age, na.rm = TRUE)
+  )
+
+# extract unique h_ids
+unique_ids <- unique(serostatus_all_long$h_id)
+
+
+closest_points <- anthro_long_sero_wide %>%
+  group_by(h_id) %>%
+  group_modify(~ {
+    df_sub <- .
+    assigned <- lapply(1:nrow(summary_stats), function(i) {
+      # Get timepoint info
+      median_val <- summary_stats$median_age[i]
+      min_val <- summary_stats$min_age[i]
+      max_val <- summary_stats$max_age[i]
+      
+      # Filter rows within the allowed interval
+      df_valid <- df_sub %>% filter(age >= min_val, age <= max_val)
+      
+      # If no valid measurement, skip
+      if(nrow(df_valid) == 0) return(NULL)
+      
+      # Pick closest to median among valid rows
+      idx <- which.min(abs(df_valid$age - median_val))
+      df_row <- df_valid[idx, ]
+      df_row$timepoint <- summary_stats$timepoint[i]
+      df_row
+    })
+    bind_rows(assigned)
+  }) %>%
+  ungroup()
+
 
 
 
 # anthropometry table
-anthro_table <- complete_data %>%
-  filter(timepoint != 0) %>%
+library(gt)
+library(dplyr)
+
+# anthropometry table using closest_points
+anthro_table <- closest_points %>%
+  filter(!is.na(timepoint)) %>%  # ensure we only include assigned timepoints
   mutate(
     cohort_label = case_when(
       coh == 1 ~ "BiB",
@@ -379,8 +465,8 @@ anthro_table <- complete_data %>%
   group_by(timepoint, timepoint_label, cohort_label) %>%
   summarise(
     N = n(),
-    Male = sum(sex == 1, na.rm = TRUE),
-    Female = sum(sex == 2, na.rm = TRUE),
+    Male = sum(sex == "Male", na.rm = TRUE),
+    Female = sum(sex == "Female", na.rm = TRUE),
     
     # BMI
     BMI_Mean = mean(cbmi, na.rm = TRUE),
@@ -468,13 +554,18 @@ anthro_table <- complete_data %>%
   ) %>%
   tab_source_note(source_note = "Stratified by cohort and timepoint (BiB, INMA, RHEA)")
 
+
+
 anthro_table
 
 
 
 
+
+
+
 # Serostatus table
-sero_table <- complete_data %>%
+sero_table <- serostatus_all_long%>%
   filter(timepoint != 0) %>%
   mutate(
     cohort_label = case_when(
@@ -547,10 +638,10 @@ sero_table
 # histograms for normality check
 
 
-norm_histograms(complete_data, "cbmi")
-norm_histograms(complete_data, "bmi_zscore")
-norm_histograms(complete_data, "height_zscore")
-norm_histograms(complete_data, "weight_zscore")
+norm_histograms(anthro_long_sero_wide, "cbmi")
+norm_histograms(anthro_long_sero_wide, "bmi_zscore")
+norm_histograms(anthro_long_sero_wide, "height_zscore")
+norm_histograms(anthro_long_sero_wide, "weight_zscore")
 
 
 complete_data %>%
@@ -576,17 +667,17 @@ complete_data %>%
 
 # scatter plots. distribution of variable by cohort
 
-scatter_by_cohort(complete_data, "agecm_cgrowth", "cbmi")
-scatter_by_cohort(complete_data, "agecm_cgrowth", "bmi_zscore")
-scatter_by_cohort(complete_data, "agecm_cgrowth", "height_zscore")
-scatter_by_cohort(complete_data,"agecm_cgrowth", "weight_zscore")
-scatter_by_cohort(complete_data, "agecm_cgrowth", "whtr" )
+scatter_by_cohort(anthro_long_sero_wide, "age", "cbmi")
+scatter_by_cohort(anthro_long_sero_wide, "age", "bmi_zscore")
+scatter_by_cohort(anthro_long_sero_wide, "age", "height_zscore")
+scatter_by_cohort(anthro_long_sero_wide,"age", "weight_zscore")
+scatter_by_cohort(anthro_long_sero_wide, "age", "whtr" )
 
 
 
 
 # normality tests
-norm_cbmi <- shapiro_by_group(complete_data, "cbmi")
+norm_cbmi <- shapiro_by_group(anthro_long_sero_wide, "cbmi")
 norm_bmiz <- shapiro_by_group(complete_data, "bmi_zscore")
 norm_heightz <- shapiro_by_group(complete_data, "height_zscore")
 norm_weight_z <- shapiro_by_group(complete_data, "weight_zscore")
@@ -598,25 +689,6 @@ norm_whtr <- shapiro_by_group(complete_data, "whtr")
 
 
 
-
-
-
-
-
-
-
-# non-parametric mann-whitney-wilcoxon test, for mean difference(numeric variables) for 2 unrelated groups 
-
-
-mann_whitney_plot(complete_data, "cbmi", 3, 2, 3)
-
-
-
-
-# non-parametric kruskal-wallis test, for mean difference(numeric variables) for over 2 unrelated groups 
-
-result <- kruskal_wallis_plot(complete_data, "cbmi", 2, c(1, 2, 3))
-print(result)
 
 
 
@@ -674,7 +746,7 @@ complete_data_wide <- bind_rows(data_BiB_wide, data_INMA_wide, data_RHEA_wide)
 # all anthropomety in long format
 
 cols_to_keep <- c(
-  "h_id",  "sex",  "coh", 
+  "h_id",  "sex",  "coh",
   "agecd_cgrowth", "cheight", "cweight", "cbmi", "cabdo", "csubscap", "ctriceps", 
   "bmi_zscore", "weight_zscore", "height_zscore", "tris_zscore", "subscap_zscore",
   "bmi_category", "whtr", "central_obesity", "stunted"
@@ -745,6 +817,12 @@ anthro_long_sero_wide <- obesity_all_long %>%
   left_join(serostatus_all_wide, by = "h_id")
 
 
+anthro_long_sero_wide <- anthro_long_sero_wide %>%
+  left_join(confounders, by = "h_id") %>%
+  relocate(all_of(c("pre_bmi_c", "urb_area_id",
+                    "smk_p", "parity_m", "ethn3_m", "edu_m_0", "birth_weight","birth_length", "birth_head_circum",
+                    "delivery_type", "m_age", "sex.y", "breastfed_ever", "preg_smk", "nursery_upto2years" )), .after = 3)
+
 
 
 ## to do:
@@ -756,27 +834,40 @@ anthro_long_sero_wide <- obesity_all_long %>%
 # read bibliography 
 
 
+# quick fixes
+
+summary(complete_data$age)
+
+complete_data <- complete_data %>%
+  mutate(
+    agecd_cgrowth = if_else(is.na(agecd_cgrowth), round(age * 365.25), agecd_cgrowth),
+    agecm_cgrowth = if_else(is.na(agecm_cgrowth), round(age * 12), agecm_cgrowth),
+    agecy_cgrowth = if_else(is.na(agecy_cgrowth), round(age), agecy_cgrowth)
+  )
+
+
 
 
 
 
 # Model 1: BMI predicting viral infection(ADV36)
 model1 <- glmer(
-  cut_Avd36 ~ scale(cbmi) + age + sex + (1 | h_id),
+  cut_Avd36 ~ scale(bmi_zscore) * age + scale(cbmi) * cohort + (1 | h_id),
   data = complete_data,
   family = binomial(link = "logit")
 )
+
 
 summary(model1)
 
 # Model 2: ADV36 predicting BMI
 model2 <- lmer(
-  cbmi ~ cut_Avd36 + age + sex + (1 | h_id),
-  data = complete_data,
-  
+  bmi_zscore ~ cut_Avd36 * age + cut_Avd36 * cohort + (1 | h_id),
+  data = complete_data
 )
 
 summary(model2)
+
 
 # add interaction and cohort(drop age + sex)
 
@@ -784,73 +875,12 @@ summary(model2)
 
 
 
-library(lme4)
-library(lmerTest)
-library(dplyr)
-library(broom.mixed)
-library(gt)
-
 # --- Virus variable names ---
 virus_vars <- c("CMV_class", "cut_VZV", "cut_Avd36", "EBV_class",
                 "cut_BK", "cut_JC", "cut_KI", "cut_WU", "cut_MCV")
 
+
 # --- Function to run models and format results ---
-run_bidirectional_models_table <- function(data, virus_vars) {
-  results_table <- data.frame(
-    Virus = character(),
-    Model = character(),
-    Predictor = character(),
-    Estimate = numeric(),
-    Std_Error = numeric(),
-    OR_or_Beta = numeric(),
-    z_or_t = numeric(),
-    p_value = numeric(),
-    Random_SD = numeric(),
-    stringsAsFactors = FALSE
-  )
-  
-  for (virus in virus_vars) {
-    # Model 1: BMI_zscore -> Virus (with interaction age)
-    formula1 <- as.formula(paste0(virus, " ~ scale(bmi_zscore) * age + (1 | h_id)"))
-    model1 <- glmer(formula1, data = data, family = binomial(link = "logit"))
-    tidy1 <- broom.mixed::tidy(model1, effects = "fixed") %>%
-      mutate(
-        z_or_t = estimate / std.error,
-        p_value = 2 * (1 - pnorm(abs(z_or_t))),
-        OR_or_Beta = exp(estimate),
-        Virus = virus,
-        Model = "BMI_to_Virus"
-      ) %>%
-      rename(Predictor = term, Estimate = estimate, Std_Error = std.error) %>%
-      select(Virus, Model, Predictor, Estimate, Std_Error, OR_or_Beta, z_or_t, p_value)
-    rand_sd1 <- as.data.frame(VarCorr(model1)) %>%
-      filter(grp == "h_id", var1 == "(Intercept)") %>%
-      pull(sdcor)
-    tidy1$Random_SD <- rand_sd1
-    
-    # Model 2: Virus -> BMI_zscore (with interaction age)
-    formula2 <- as.formula(paste0("bmi_zscore ~ ", virus, " * age + (1 | h_id)"))
-    model2 <- lmer(formula2, data = data)
-    tidy2 <- broom.mixed::tidy(model2, effects = "fixed") %>%
-      mutate(
-        OR_or_Beta = estimate,
-        z_or_t = statistic,
-        p_value = p.value,
-        Virus = virus,
-        Model = "Virus_to_BMI"
-      ) %>%
-      rename(Predictor = term, Estimate = estimate, Std_Error = std.error) %>%
-      select(Virus, Model, Predictor, Estimate, Std_Error, OR_or_Beta, z_or_t, p_value)
-    rand_sd2 <- as.data.frame(VarCorr(model2)) %>%
-      filter(grp == "h_id", var1 == "(Intercept)") %>%
-      pull(sdcor)
-    tidy2$Random_SD <- rand_sd2
-    
-    results_table <- bind_rows(results_table, tidy1, tidy2)
-  }
-  
-  return(results_table)
-}
 
 # Run models
 all_results <- run_bidirectional_models_table(complete_data, virus_vars)
@@ -970,3 +1000,4 @@ test_results
 
 
 dev.off()
+
