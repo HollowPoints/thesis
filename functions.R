@@ -51,7 +51,7 @@ assign_anthroplus_scores <- function(df) {
     df[rows, ],
     anthroplus_zscores(
       sex = sex,
-      age_in_months = agecm_cgrowth,
+      age_in_months = (agecd_cgrowth / 30),
       weight_in_kg =  cweight,
       height_in_cm =  cheight,
       
@@ -394,8 +394,8 @@ norm_histograms <- function(data, var_name) {
 
 
 
+
 scatter_by_cohort <- function(data, x, y) {
-  # Keep only rows with non-missing x and y
   filtered_data <- data %>%
     filter(!is.na(.data[[x]]), !is.na(.data[[y]])) %>%
     mutate(
@@ -408,14 +408,16 @@ scatter_by_cohort <- function(data, x, y) {
     )
   
   ggplot(filtered_data, aes(x = .data[[x]], y = .data[[y]], color = cohort_label)) +
-    geom_point(alpha = 0.6) +
+    geom_point(alpha = 0.6, size = 1.1) +
+    geom_smooth(method = "lm", se = TRUE, linewidth = 1.2, show.legend = FALSE) +
     labs(
-      title = paste("Scatter Plot of", y, "vs", x, "by Cohort"),
+      
       x = x,
       y = y,
       color = "Cohort"
     ) +
-    theme_minimal()
+    guides(color = guide_legend(override.aes = list(size = 6))) +  # larger legend dots
+    theme_minimal(base_size = 10)
 }
 
 
@@ -556,6 +558,63 @@ widen2 <- function(df_long, stable_vars = c("h_id", "m_id", "c_id", "helixid", "
 
 
 
+# --- Function to run models and format results ---
+run_bidirectional_models_table <- function(data, virus_vars) {
+  results_table <- data.frame(
+    Virus = character(),
+    Model = character(),
+    Predictor = character(),
+    Estimate = numeric(),
+    Std_Error = numeric(),
+    OR_or_Beta = numeric(),
+    z_or_t = numeric(),
+    p_value = numeric(),
+    Random_SD = numeric(),
+    stringsAsFactors = FALSE
+  )
+  
+  for (virus in virus_vars) {
+    # Model 1: BMI_zscore -> Virus (with interaction age)
+    formula1 <- as.formula(paste0(virus, " ~ scale(bmi_zscore) * age * coh + (1 | h_id)"))
+    model1 <- glmer(formula1, data = data, family = binomial(link = "logit"))
+    tidy1 <- broom.mixed::tidy(model1, effects = "fixed") %>%
+      mutate(
+        z_or_t = estimate / std.error,
+        p_value = 2 * (1 - pnorm(abs(z_or_t))),
+        OR_or_Beta = exp(estimate),
+        Virus = virus,
+        Model = "BMI_to_Virus"
+      ) %>%
+      rename(Predictor = term, Estimate = estimate, Std_Error = std.error) %>%
+      select(Virus, Model, Predictor, Estimate, Std_Error, OR_or_Beta, z_or_t, p_value)
+    rand_sd1 <- as.data.frame(VarCorr(model1)) %>%
+      filter(grp == "h_id", var1 == "(Intercept)") %>%
+      pull(sdcor)
+    tidy1$Random_SD <- rand_sd1
+    
+    # Model 2: Virus -> BMI_zscore (with interaction age)
+    formula2 <- as.formula(paste0("bmi_zscore ~ ", virus, " * age * coh + (1 | h_id)"))
+    model2 <- lmer(formula2, data = data)
+    tidy2 <- broom.mixed::tidy(model2, effects = "fixed") %>%
+      mutate(
+        OR_or_Beta = estimate,
+        z_or_t = statistic,
+        p_value = p.value,
+        Virus = virus,
+        Model = "Virus_to_BMI"
+      ) %>%
+      rename(Predictor = term, Estimate = estimate, Std_Error = std.error) %>%
+      select(Virus, Model, Predictor, Estimate, Std_Error, OR_or_Beta, z_or_t, p_value)
+    rand_sd2 <- as.data.frame(VarCorr(model2)) %>%
+      filter(grp == "h_id", var1 == "(Intercept)") %>%
+      pull(sdcor)
+    tidy2$Random_SD <- rand_sd2
+    
+    results_table <- bind_rows(results_table, tidy1, tidy2)
+  }
+  
+  return(results_table)
+}
 
 
 
