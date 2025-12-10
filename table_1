@@ -1,0 +1,267 @@
+
+
+clean_sex <- function(df) {
+  df %>%
+    mutate(
+      sex = as.character(sex),      # factor -> character ("Male", "Female")
+      sex = trimws(sex),
+      sex = case_when(
+        sex %in% c("Male", "male", "M", "m", "1") ~ "M",
+        sex %in% c("Female", "female", "F", "f", "2") ~ "F",
+        is.na(sex) ~ NA_character_,
+        TRUE ~ NA_character_        # anything weird becomes NA
+      )
+    )
+}
+
+add_zscores <- function(df) {
+  df %>%
+    clean_sex() %>%
+    assign_anthro_scores() %>%       # 0–5 years
+    assign_anthroplus_scores()       # 5–19 years
+}
+
+pick_closest_per_timepoint <- function(df) {
+  df %>%
+    group_by(h_id) %>%
+    group_modify(~ {
+      df_sub <- .
+      assigned <- lapply(1:nrow(summary_stats), function(i) {
+        median_val <- summary_stats$median_age[i]
+        min_val    <- summary_stats$min_age[i]
+        max_val    <- summary_stats$max_age[i]
+        
+        df_valid <- df_sub %>% filter(age >= min_val, age <= max_val)
+        if (nrow(df_valid) == 0) return(NULL)
+        
+        idx <- which.min(abs(df_valid$age - median_val))
+        df_row <- df_valid[idx, ]
+        df_row$timepoint <- summary_stats$timepoint[i]
+        df_row
+      })
+      bind_rows(assigned)
+    }) %>%
+    ungroup()
+}
+
+
+processed_list <- processed_list %>%
+  map(pick_closest_per_timepoint) %>%  # enforce 1 row per child × timepoint
+  map(add_zscores)                     # then clean sex + assign z-scores
+
+
+
+summarise_anthro_numeric <- function(df) {
+  df %>%
+    filter(!is.na(timepoint)) %>%
+    mutate(
+      cohort_label = case_when(
+        coh == 1 ~ "BiB",
+        coh == 2 ~ "INMA",
+        coh == 3 ~ "RHEA",
+        TRUE ~ as.character(coh)
+      ),
+      timepoint_label = case_when(
+        timepoint == 1 ~ "2 Years",
+        timepoint == 2 ~ "4–6 Years",
+        timepoint == 3 ~ "6–9 Years",
+        timepoint == 4 ~ "11 Years",
+        TRUE ~ as.character(timepoint)
+      )
+    ) %>%
+    group_by(timepoint, timepoint_label, cohort_label) %>%
+    summarise(
+      N = n(),
+      Male   = sum(sex %in% c("Male", "M"),   na.rm = TRUE),
+      Female = sum(sex %in% c("Female", "F"), na.rm = TRUE),
+      
+      BMI_Mean = mean(cbmi, na.rm = TRUE),
+      BMI_SD   = sd(cbmi, na.rm = TRUE),
+      BMI_n    = sum(!is.na(cbmi)),
+      
+      BMIz_Mean = mean(bmi_zscore, na.rm = TRUE),
+      BMIz_SD   = sd(bmi_zscore, na.rm = TRUE),
+      BMIz_n    = sum(!is.na(bmi_zscore)),
+      
+      Heightz_Mean = mean(height_zscore, na.rm = TRUE),
+      Heightz_SD   = sd(height_zscore, na.rm = TRUE),
+      Heightz_n    = sum(!is.na(height_zscore)),
+      
+      WHtR_Mean = mean(whtr, na.rm = TRUE),
+      WHtR_SD   = sd(whtr, na.rm = TRUE),
+      WHtR_n    = sum(!is.na(whtr)),
+      
+      Stunted_n   = sum(stunted == 1, na.rm = TRUE),
+      Stunted_pct = mean(stunted == 1, na.rm = TRUE) * 100,
+      
+      Thin_n   = sum(bmi_category == "Thin", na.rm = TRUE),
+      Thin_pct = mean(bmi_category == "Thin", na.rm = TRUE) * 100,
+      
+      Normal_n   = sum(bmi_category == "Normal", na.rm = TRUE),
+      Normal_pct = mean(bmi_category == "Normal", na.rm = TRUE) * 100,
+      
+      Overweight_n   = sum(bmi_category == "Overweight", na.rm = TRUE),
+      Overweight_pct = mean(bmi_category == "Overweight", na.rm = TRUE) * 100,
+      
+      Obese_n   = sum(bmi_category == "Obese", na.rm = TRUE),
+      Obese_pct = mean(bmi_category == "Obese", na.rm = TRUE) * 100,
+      
+      CentralOb_n   = sum(central_obesity == 1, na.rm = TRUE),
+      CentralOb_pct = mean(central_obesity == 1, na.rm = TRUE) * 100,
+      
+      .groups = "drop"
+    )
+}
+
+# observed
+anthro_obs_num <- summarise_anthro_numeric(closest_points) %>%
+  mutate(dataset = "Observed")
+
+# imputed_list: your list of 20 completed datasets
+library(purrr)
+
+imp_summaries <- imputed_list %>%
+  imap(~ summarise_anthro_numeric(.x) %>% mutate(.imp = .y))
+
+imp_long <- bind_rows(imp_summaries)
+M <- length(imputed_list)
+anthro_imp_num <- imp_long %>%
+  group_by(timepoint, timepoint_label, cohort_label) %>%
+  summarise(
+    N = first(N),
+    Male = first(Male),
+    Female = first(Female),
+    
+    # BMI
+    BMI_Mean = mean(BMI_Mean),
+    BMI_SD   = sqrt(mean(BMI_SD^2) + (1 + 1 / M) * var(BMI_Mean)),
+    BMI_n    = first(BMI_n),
+    
+    # BMI z-score
+    BMIz_Mean = mean(BMIz_Mean),
+    BMIz_SD   = sqrt(mean(BMIz_SD^2) + (1 + 1 / M) * var(BMIz_Mean)),
+    BMIz_n    = first(BMIz_n),
+    
+    # Height z-score
+    Heightz_Mean = mean(Heightz_Mean),
+    Heightz_SD   = sqrt(mean(Heightz_SD^2) + (1 + 1 / M) * var(Heightz_Mean)),
+    Heightz_n    = first(Heightz_n),
+    
+    # WHtR
+    WHtR_Mean = mean(WHtR_Mean),
+    WHtR_SD   = sqrt(mean(WHtR_SD^2) + (1 + 1 / M) * var(WHtR_Mean)),
+    WHtR_n    = first(WHtR_n),
+    
+    # Categorical: pool percentages, then back-calculate n
+    Stunted_pct    = mean(Stunted_pct),
+    Thin_pct       = mean(Thin_pct),
+    Normal_pct     = mean(Normal_pct),
+    Overweight_pct = mean(Overweight_pct),
+    Obese_pct      = mean(Obese_pct),
+    CentralOb_pct  = mean(CentralOb_pct),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Stunted_n    = round(Stunted_pct    / 100 * N),
+    Thin_n       = round(Thin_pct       / 100 * N),
+    Normal_n     = round(Normal_pct     / 100 * N),
+    Overweight_n = round(Overweight_pct / 100 * N),
+    Obese_n      = round(Obese_pct      / 100 * N),
+    CentralOb_n  = round(CentralOb_pct  / 100 * N),
+    dataset = "Imputed (MI pooled)"
+  )
+
+
+
+
+anthro_all <- bind_rows(anthro_obs_num, anthro_imp_num) %>%
+  arrange(timepoint, cohort_label, dataset) %>%
+  mutate(
+    # make sure counts are numeric and print with no decimals
+    cohort_label = sprintf(
+      "%s [%s; n = %.0f]",
+      cohort_label, dataset, as.numeric(N)
+    ),
+    
+    BMI     = sprintf(
+      "%.1f (%.1f)\nn=%.0f",
+      BMI_Mean, BMI_SD, as.numeric(BMI_n)
+    ),
+    BMIz    = sprintf(
+      "%.2f (%.2f)\nn=%.0f",
+      BMIz_Mean, BMIz_SD, as.numeric(BMIz_n)
+    ),
+    Heightz = sprintf(
+      "%.2f (%.2f)\nn=%.0f",
+      Heightz_Mean, Heightz_SD, as.numeric(Heightz_n)
+    ),
+    WHtR    = sprintf(
+      "%.2f (%.2f)\nn=%.0f",
+      WHtR_Mean, WHtR_SD, as.numeric(WHtR_n)
+    ),
+    
+    Stunted    = sprintf("%.0f (%.1f%%)", as.numeric(Stunted_n),    Stunted_pct),
+    Thin       = sprintf("%.0f (%.1f%%)", as.numeric(Thin_n),       Thin_pct),
+    Normal     = sprintf("%.0f (%.1f%%)", as.numeric(Normal_n),     Normal_pct),
+    Overweight = sprintf("%.0f (%.1f%%)", as.numeric(Overweight_n), Overweight_pct),
+    Obese      = sprintf("%.0f (%.1f%%)", as.numeric(Obese_n),      Obese_pct),
+    CentralOb  = sprintf("%.0f (%.1f%%)", as.numeric(CentralOb_n),  CentralOb_pct)
+  )
+
+
+
+
+
+
+anthro_table_combined <- anthro_all %>%
+  select(
+    cohort_label, timepoint_label, Male, Female,
+    BMI, BMIz, Heightz, WHtR,
+    Stunted, Thin, Normal, Overweight, Obese, CentralOb
+  ) %>%
+  gt(groupname_col = "timepoint_label") %>%
+  tab_header(
+    title = "Anthropometric Measures by Cohort, Timepoint, and Dataset",
+    subtitle = "Observed vs Multiple-Imputation Pooled Estimates"
+  ) %>%
+  tab_spanner(label = "BMI",                  columns = BMI,    id = "spanner_bmi") %>%
+  tab_spanner(label = "BMI z-score",          columns = BMIz,   id = "spanner_bmiz") %>%
+  tab_spanner(label = "Height z-score",       columns = Heightz, id = "spanner_heightz") %>%
+  tab_spanner(label = "Waist-to-Height Ratio", columns = WHtR,  id = "spanner_whtr") %>%
+  cols_label(
+    cohort_label    = "Cohort (Dataset; n)",
+    timepoint_label = "Timepoint",
+    Male            = "Male",
+    Female          = "Female",
+    BMI             = "Mean (SD)",
+    BMIz            = "Mean (SD)",
+    Heightz         = "Mean (SD)",
+    WHtR            = "Mean (SD)",
+    Stunted         = "Stunted",
+    Thin            = "Thin",
+    Normal          = "Normal",
+    Overweight      = "Overweight",
+    Obese           = "Obese",
+    CentralOb       = "Central Obesity"
+  ) %>%
+  tab_source_note(
+    source_note = "Stratified by cohort and timepoint (BiB, INMA, RHEA). Rows labelled as Observed vs Imputed (MI pooled)."
+  )
+
+anthro_table_combined
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
