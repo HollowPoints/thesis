@@ -1,385 +1,576 @@
-obesity_all_long$age <- obesity_all_long$agecd_cgrowth / 365
+anthro_long_sero_wide$age <- anthro_long_sero_wide$agecd_cgrowth / 365
+densityplot(anthro_long_sero_wide,  ~ age)
 
-obesity_all_long <- obesity_all_long %>%
-  filter(agecd_cgrowth != 0)
-
-
-serostatus_all_long <- serostatus_all_long %>%
-  filter(timepoint != 0)
+anthro_long_sero_wide <- anthro_long_sero_wide %>%
+  mutate(bmi_scaled = (cbmi - min(cbmi, na.rm = TRUE)) / (max(cbmi, na.rm = TRUE) - min(cbmi, na.rm = TRUE)))
 
 
 
 
+database <- anthro_long_sero_wide
 
 
-propagate_sero_nn_multi <- function(anthro, sero, virus_vec) {
-  
-  anthro_out <- anthro  # start with the input dataset
-  
-  for (virus in virus_vec) {
-    
-    sero_col <- rep(NA_integer_, nrow(anthro))  # empty vector for this virus
-    sero_split <- split(sero, sero$h_id)
-    
-    for(i in seq_len(nrow(anthro))) {
-      
-      h <- anthro$h_id[i]
-      age_i <- anthro$age[i]
-      
-      if(!h %in% names(sero_split)) next
-      s <- sero_split[[as.character(h)]]
-      s_status <- s[[virus]]
-      
-      prev_idx <- which(s$age <= age_i)
-      if(length(prev_idx) > 0) {
-        prev_row <- prev_idx[which.max(s$age[prev_idx])]
-        prev_age <- s$age[prev_row]
-        prev_status <- s_status[prev_row]
-      } else {
-        prev_status <- NA
-      }
-      
-      next_idx <- which(s$age >= age_i)
-      if(length(next_idx) > 0) {
-        next_row <- next_idx[which.min(s$age[next_idx])]
-        next_age <- s$age[next_row]
-        next_status <- s_status[next_row]
-      } else {
-        next_status <- NA
-      }
-      
-      if(!is.na(prev_status) & !is.na(next_status)) {
-        if(prev_status == next_status) {
-          sero_col[i] <- prev_status
-        } else if(prev_status == 0 & next_status == 1) {
-          midpoint <- (prev_age + next_age)/2
-          sero_col[i] <- ifelse(age_i < midpoint, 0L, 1L)
-        }
-      } else if(!is.na(prev_status) & is.na(next_status)) {
-        sero_col[i] <- ifelse(prev_status == 1, 1L, NA_integer_)
-      } else if(is.na(prev_status) & !is.na(next_status)) {
-        sero_col[i] <- ifelse(next_status == 0, 0L, NA_integer_)
-      }
+
+
+
+database  <- database  %>%
+  mutate(
+    sex.x = as_factor(sex.x),
+    delivery_type = as_factor(delivery_type),
+    across(where(is.labelled) & !c("sex.x", "delivery_type"), ~ as.numeric(.))
+  )
+
+database$delivery_type <- as.numeric(database$delivery_type)
+
+database <- classify_bmi_category(database)
+
+
+
+
+
+# Parameters
+viruses <- c("CMV", "VZV", "Avd36", "EBV", "BKPyV", "JCPyV", "KIPyV", "WUPyV", "MCPyV", "HSV" ,"EVB")
+virus_pattern <- paste0("^log10_(", paste(viruses, collapse = "|"), ").*norm_\\d+$")
+day_range <- 60 / 365.25  # 60 days in years
+
+# 1) Add row id
+database2 <- database %>% mutate(.rowid = row_number())
+
+# 2) Pivot long all virus columns
+long_df <- database2 %>%
+  select(.rowid, age, starts_with("age_"), matches(virus_pattern)) %>%
+  pivot_longer(
+    cols = matches(virus_pattern),
+    names_to = c("virus_full", "tp"),
+    names_pattern = "(log10_.*)norm_(\\d+)$",
+    values_to = "log_value"
+  ) %>%
+  mutate(
+    tp = as.integer(tp),
+    virus = str_remove(virus_full, "^log10_"),
+    age_tp = case_when(
+      tp == 0 ~ age_0,
+      tp == 1 ~ age_1,
+      tp == 2 ~ age_2,
+      tp == 3 ~ age_3,
+      tp == 4 ~ age_4,
+      TRUE ~ NA_real_
+    ),
+    age_diff = abs(age - age_tp)
+  )
+
+# 3) Keep only candidates within ±60 days
+candidates <- long_df %>%
+  filter(!is.na(log_value), !is.na(age_tp), age_diff <= day_range)
+
+# 4) For each original row and virus, select the closest
+closest <- candidates %>%
+  group_by(.rowid, virus) %>%
+  slice_min(order_by = age_diff, n = 1, with_ties = FALSE) %>%
+  ungroup() %>%
+  select(.rowid, virus, log_value, sero_age = age_tp)  # add age_sero
+
+
+# 5) Pivot wider to get one column per virus
+wide_df <- closest %>%
+  pivot_wider(
+    names_from = virus,
+    values_from = log_value,
+    names_prefix = "log10_"
+  )
+
+# 6) Merge back into original dataset
+database <- database2 %>%
+  left_join(wide_df, by = ".rowid") %>%
+  select(-.rowid)
+
+
+
+
+
+
+
+
+
+
+
+# 1) Detect the virus columns that we actually want to clean:
+#    all "log10_" columns that are NOT the original ..._norm_* intensity columns.
+sero_vars <- names(database) %>%
+  .[grepl("^log10_", .) & !grepl("norm_", .)]
+
+# Check you really have a single serology age column called "sero_age"
+# If it has a different name, change this line accordingly.
+sero_age_col <- "sero_age"
+
+# 2) Add stable row id
+database2 <- database %>%
+  mutate(.rowid = dplyr::row_number())
+
+# 3) Loop over each virus column and keep only the closest row per h_id × timepoint_label × sero_age
+for (v in sero_vars) {
+ 
+  keep_ids <- database2 %>%
+    filter(
+      !is.na(.data[[v]]),
+      !is.na(.data[[sero_age_col]]),
+      !is.na(timepoint_label)
+    ) %>%
+    mutate(sero_age = .data[[sero_age_col]]) %>%
+    group_by(h_id, timepoint_label, sero_age) %>%
+    # distance between anthropometry age and serology age
+    mutate(dist = abs(age - sero_age)) %>%
+    # keep only the closest anthropometry row in this group
+    slice_min(order_by = dist, n = 1, with_ties = FALSE) %>%
+    ungroup() %>%
+    pull(.rowid)
+ 
+  # mask for rows that should be cleared for this virus
+  mask <- !(database2$.rowid %in% keep_ids) & !is.na(database2[[v]])
+ 
+  # set virus to NA on all "extra" rows
+  database2[[v]][mask] <- NA_real_
+}
+
+# 4) Drop helper id and overwrite database
+database <- database2 %>%
+  select(-.rowid)
+
+
+
+
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+
+# ---- 1. Parameters ----
+day_range <- 60 / 365.25   # ±60 days in years
+
+# identify all serology markers in serostatus_all_long: log10_*_norm
+sero_markers <- names(serostatus_all_long) %>%
+  .[grepl("^log10_.*_norm$", .)]
+
+# ---- 2. Build serology-long with age in years ----
+sero_long <- serostatus_all_long %>%
+  filter(timepoint != 0) %>%                             # ignore timepoint 0 as you did
+  select(h_id, age_days, all_of(sero_markers)) %>%       # adjust age_days name if needed
+  mutate(age_sero = age_days / 365.25) %>%
+  pivot_longer(
+    cols = all_of(sero_markers),
+    names_to   = "marker_norm",
+    values_to  = "value"
+  ) %>%
+  filter(!is.na(value))                                  # keep only non-missing serology
+
+# marker name in database (without "_norm")
+sero_long <- sero_long %>%
+  mutate(marker_db = sub("_norm$", "", marker_norm))
+
+# ---- 3. Anthro ages available in database ----
+anthro_times <- database %>%
+  filter(!is.na(age)) %>%
+  select(h_id, age) %>%
+  distinct()
+
+# ---- 4. Find serology measurements that have ANY database row within ±60 days ----
+# join per h_id, compute age diff, keep matches within range
+cand_matches <- sero_long %>%
+  inner_join(anthro_times, by = "h_id") %>%
+  mutate(age_diff = abs(age_sero - age)) %>%
+  filter(age_diff <= day_range)
+
+# each serology record is uniquely (h_id, age_sero, marker_db, value)
+matched_keys <- cand_matches %>%
+  distinct(h_id, age_sero, marker_db, value)
+
+# ---- 5. Serology measurements with NO matching anthropometry ----
+unmatched <- anti_join(
+  sero_long,
+  matched_keys,
+  by = c("h_id", "age_sero", "marker_db", "value")
+)
+
+# If there are none, you're done
+# if (nrow(unmatched) == 0) { database_expanded <- database }
+library(dplyr)
+library(tidyr)
+
+# ---- 6. Collapse unmatched to one row per h_id × age_sero (multiple viruses in same row) ----
+# First, ensure one numeric value per (h_id, age_sero, marker_db)
+unmatched_wide <- unmatched %>%
+  group_by(h_id, age_sero, marker_db) %>%
+  summarise(value = first(na.omit(value)), .groups = "drop") %>%
+  pivot_wider(
+    names_from  = marker_db,
+    values_from = value
+  )
+
+# ---- 7. Create "blank" rows with same structure as database ----
+n_new <- nrow(unmatched_wide)
+
+if (n_new > 0) {
+  # empty frame with same columns
+  template <- database[0, , drop = FALSE]
+ 
+  # create NA-filled df with same columns
+  new_rows <- as.data.frame(
+    matrix(NA, nrow = n_new, ncol = ncol(template)),
+    stringsAsFactors = FALSE
+  )
+  names(new_rows) <- names(template)
+ 
+  # fill key fields
+  new_rows$h_id <- unmatched_wide$h_id
+  new_rows$age  <- unmatched_wide$age_sero
+ 
+  # copy over virus columns (and any other matching names)
+  for (col in names(unmatched_wide)) {
+    if (col %in% names(new_rows)) {
+      new_rows[[col]] <- unmatched_wide[[col]]
     }
-    
-    # Attach the new column to the output dataset
-    anthro_out[[paste0(virus, "_sero")]] <- sero_col
   }
-  
-  return(anthro_out)  # just one dataset with 9 new columns
+ 
+  # ---- 8. Bind new serology-only rows onto the database ----
+  database_expanded <- bind_rows(database, new_rows)
+} else {
+  database_expanded <- database
 }
 
 
 
 
-virus_vec <- c("CMV_class", "cut_VZV", "cut_Avd36", "EBV_class",
-               "cut_BK", "cut_JC", "cut_KI", "cut_WU", "cut_MCV")
+fixed_vars <- c(
+  "sex.x", "coh", "pre_bmi_c", "urb_area_id", "smk_p",
+  "ethn3_m", "edu_m_0", "m_age", "breastfed_ever", "birth_head_circum", "birth_weight" ,  
+  "birth_length" ,  "preg_smk", "nursery_upto2years", "sex" ,"parity_m"
+)
 
 
+lookup <- database_expanded %>%
+  # keep rows where at least one fixed var is non-missing
+  filter(if_any(all_of(fixed_vars), ~ !is.na(.))) %>%
+  group_by(h_id) %>%
+  slice(1) %>%          # one representative row per child
+  ungroup() %>%
+  select(h_id, all_of(fixed_vars))
 
 
-# turn imputed into list of completed datasets
-imputed_list <- lapply(1:imputed$m, function(i) complete(imputed, i))
+database_expanded <- database_expanded %>%
+  left_join(lookup, by = "h_id", suffix = c("", ".ref"))
+
+for (v in fixed_vars) {
+  ref <- paste0(v, ".ref")
+  database_expanded[[v]] <- coalesce(database_expanded[[v]], database_expanded[[ref]])
+}
+
+database_expanded <- database_expanded %>%
+  select(-ends_with(".ref"))
 
 
-# propagate for each imputed dataset
-processed_list <- lapply(imputed_list, function(df) {
-  propagate_sero_nn_multi(df, serostatus_all_long, virus_vec)
-})
-
-
-
-
-
-
-
-
-
-
-
-# 1. Identify log10 columns from the first dataframe
-log_cols <- names(processed_list[[1]])[str_detect(names(processed_list[[1]]), "^log10_")]
-
-# 2. Apply the rule to all 20 datasets
-processed_list <- lapply(processed_list, function(df) {
-  df %>%
-    mutate(
-      across(
-        all_of(log_cols),
-        ~ ifelse(is.na(sero_age), NA_real_, .)
-      )
-    )
-})
-
-
-#
-
-
-
-closest_points <-propagate_sero_nn_multi(closest_points, serostatus_all_long, virus_vec)
-
-
-
-
-
-# Example for Adv36; can be repeated for other viruses
-bmi_sero_summary <- closest_points %>%
-  select(h_id, age, timepoint, sex, coh, bmi_zscore, cbmi, bmi_category, cut_Avd36_sero) %>%
-  filter(!is.na(cut_Avd36_sero)) %>%   # only children with serostatus
-  group_by(timepoint, cut_Avd36_sero) %>%
-  summarise(
-    N = n(),
-    BMI_Mean = mean(cbmi, na.rm = TRUE),
-    BMI_SD = sd(cbmi, na.rm = TRUE),
-    BMIz_Mean = mean(bmi_zscore, na.rm = TRUE),
-    BMIz_SD = sd(bmi_zscore, na.rm = TRUE),
-    Overweight_n = sum(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE),
-    Overweight_pct = mean(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE)*100,
-    .groups = "drop"
-  ) %>%
-  mutate(
-    BMI = sprintf("%.1f (%.1f)", BMI_Mean, BMI_SD),
-    BMIz = sprintf("%.2f (%.2f)", BMIz_Mean, BMIz_SD),
-    Overweight = sprintf("%d (%.1f%%)", Overweight_n, Overweight_pct)
-  ) %>%
-  arrange(timepoint, cut_Avd36_sero)
+database_bckp <- database
+database <- database_expanded
 
 
 
 
 
 
-bmi_sero_summary_cohort <- closest_points %>%
-  select(h_id, age, timepoint, sex, coh, bmi_zscore, cbmi, bmi_category, cut_Avd36_sero) %>%
-  filter(!is.na(cut_Avd36_sero)) %>%
-  group_by(timepoint, coh, cut_Avd36_sero) %>%
-  summarise(
-    N = n(),
-    BMI_Mean = mean(cbmi, na.rm = TRUE),
-    BMI_SD = sd(cbmi, na.rm = TRUE),
-    BMIz_Mean = mean(bmi_zscore, na.rm = TRUE),
-    BMIz_SD = sd(bmi_zscore, na.rm = TRUE),
-    Overweight_n = sum(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE),
-    Overweight_pct = mean(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE)*100,
-    .groups = "drop"
-  ) %>%
-  mutate(
-    BMI = sprintf("%.1f (%.1f)", BMI_Mean, BMI_SD),
-    BMIz = sprintf("%.2f (%.2f)", BMIz_Mean, BMIz_SD),
-    Overweight = sprintf("%d (%.1f%%)", Overweight_n, Overweight_pct),
-    cohort_label = case_when(
-      coh == 1 ~ "BiB",
-      coh == 2 ~ "INMA",
-      coh == 3 ~ "RHEA",
-      TRUE ~ as.character(coh)
-    )
-  ) %>%
-  arrange(timepoint, cohort_label, cut_Avd36_sero)
 
 
 
 
-library(ggplot2)
 
-# Prepare data for plotting (mean per timepoint)
-plot_data <- closest_points %>%
-  select(h_id, age, timepoint, bmi_zscore, cut_Avd36_sero, coh) %>%
-  filter(!is.na(cut_Avd36_sero)) %>%
-  group_by(timepoint, cut_Avd36_sero, coh) %>%
-  summarise(
-    BMIz_mean = mean(bmi_zscore, na.rm = TRUE),
-    BMIz_se = sd(bmi_zscore, na.rm = TRUE)/sqrt(n()),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    cohort_label = case_when(
-      coh == 1 ~ "BiB",
-      coh == 2 ~ "INMA",
-      coh == 3 ~ "RHEA",
-      TRUE ~ as.character(coh)
-    )
+
+# Correlation
+
+
+cor_matrix <- cor(select_if(database, is.numeric), use = "pairwise.complete.obs")
+
+
+ 
+cor_long <- as.data.frame(cor_matrix) %>%
+  rownames_to_column(var = "var1") %>%
+  pivot_longer(-var1, names_to = "var2", values_to = "cor") %>%
+  filter(var1 != var2) %>%              # exclude self-correlations
+  mutate(abs_cor = abs(cor)) %>%
+  filter(abs_cor >= 0.5) %>%            # set threshold for correlation
+  arrange(desc(abs_cor))
+
+cor_long
+
+vars_to_impute <- c("cheight", "cweight", "cabdo", "csubscap", "ctriceps")
+
+
+cor_selected <- cor_long %>%
+  filter(abs_cor > 0.5 & (var1 %in% vars_to_impute | var2 %in% vars_to_impute))
+
+
+
+# Extract unique variable names from these selected pairs
+selected_vars <- unique(c(cor_selected$var1, cor_selected$var2))
+
+ 
+
+
+ 
+ 
+ 
+ 
+ 
+  # --- 0. Prepare data ---
+ 
+  # Assume obesity_all_long is your original dataset with missing values
+  # Convert h_id to factor for modeling later
+  database$h_id <- as.factor(database$h_id)
+ 
+ 
+ 
+  # Identify column positions in `database`
+  start_col <- match("timepoint_0", names(database))
+  end_col   <- match("cut_Toxo_4", names(database))
+ 
+  # Optional sanity check
+  start_col
+  end_col
+  names(database)[start_col:end_col]
+ 
+  # Drop the entire block of columns
+  database <- database[ , -c(start_col:end_col), drop = FALSE]
+ 
+ 
+ 
+  # Generate an integer version of h_id that preserves unique IDs (required by 2l.pan)
+  imp_data <- database
+  imp_data$h_id_int <- as.integer(factor(database$h_id))
+ 
+ 
+ 
+ 
+ 
+ 
+  # map the connections for further reference if needed
+  mapping <- data.frame(
+    original_id = levels(database$h_id),
+    int_id = as.integer(factor(levels(database$h_id)))
+   
   )
-
-ggplot(plot_data, aes(x = timepoint, y = BMIz_mean, color = factor(cut_Avd36_sero), group = cut_Avd36_sero)) +
-  geom_line(linewidth = 1) +      # use linewidth instead of size
-  geom_point(size = 2) +
-  geom_ribbon(aes(ymin = BMIz_mean - 1.96*BMIz_se,
-                  ymax = BMIz_mean + 1.96*BMIz_se,
-                  fill = factor(cut_Avd36_sero)), alpha = 0.2, color = NA) +
-  facet_wrap(~cohort_label) +
-  scale_x_continuous(breaks = 1:4, labels = c("2y", "4–6y", "6–9y", "11y")) +
-  labs(x = "Timepoint", y = "BMI z-score", color = "Seropositive", fill = "Seropositive") +
-  theme_minimal(base_size = 14)
-
-
-
-
-
-
-
-
-
-sero_vars <- c("CMV_class_sero", "cut_VZV_sero", "cut_Avd36_sero",
-               "EBV_class_sero", "cut_BK_sero", "cut_JC_sero",
-               "cut_KI_sero", "cut_WU_sero", "cut_MCV_sero")
-
-# Create summary tables for each serovar
-bmi_sero_summaries <- map(sero_vars, function(sero) {
-  closest_points %>%
-    select(h_id, age, timepoint, sex, coh, bmi_zscore, cbmi, bmi_category, all_of(sero)) %>%
-    filter(!is.na(.data[[sero]])) %>%
-    group_by(timepoint, coh, .data[[sero]]) %>%
-    summarise(
-      N = n(),
-      BMI_Mean = mean(cbmi, na.rm = TRUE),
-      BMI_SD = sd(cbmi, na.rm = TRUE),
-      BMIz_Mean = mean(bmi_zscore, na.rm = TRUE),
-      BMIz_SD = sd(bmi_zscore, na.rm = TRUE),
-      Overweight_n = sum(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE),
-      Overweight_pct = mean(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE)*100,
-      .groups = "drop"
-    ) %>%
-    mutate(
-      BMI = sprintf("%.1f (%.1f)", BMI_Mean, BMI_SD),
-      BMIz = sprintf("%.2f (%.2f)", BMIz_Mean, BMIz_SD),
-      Overweight = sprintf("%d (%.1f%%)", Overweight_n, Overweight_pct),
-      cohort_label = case_when(
-        coh == 1 ~ "BiB",
-        coh == 2 ~ "INMA",
-        coh == 3 ~ "RHEA",
-        TRUE ~ as.character(coh)
-      ),
-      sero_var = sero
-    ) %>%
-    arrange(timepoint, cohort_label, .data[[sero]])
-})
-
-# Combine into one table if needed
-bmi_sero_summary_all <- bind_rows(bmi_sero_summaries)
-
-
-# Create plots for each serovar
-bmi_sero_plots <- map(sero_vars, function(sero) {
-  plot_data <- closest_points %>%
-    select(h_id, age, timepoint, bmi_zscore, coh, all_of(sero)) %>%
-    filter(!is.na(.data[[sero]])) %>%
-    group_by(timepoint, .data[[sero]], coh) %>%
-    summarise(
-      BMIz_mean = mean(bmi_zscore, na.rm = TRUE),
-      BMIz_se = sd(bmi_zscore, na.rm = TRUE)/sqrt(n()),
-      .groups = "drop"
-    ) %>%
-    mutate(
-      cohort_label = case_when(
-        coh == 1 ~ "BiB",
-        coh == 2 ~ "INMA",
-        coh == 3 ~ "RHEA",
-        TRUE ~ as.character(coh)
-      )
-    )
-  
-  ggplot(plot_data, aes(x = timepoint, y = BMIz_mean, color = factor(.data[[sero]]), group = .data[[sero]])) +
-    geom_line(linewidth = 1) +
-    geom_point(size = 2) +
-    geom_ribbon(aes(ymin = BMIz_mean - 1.96*BMIz_se,
-                    ymax = BMIz_mean + 1.96*BMIz_se,
-                    fill = factor(.data[[sero]])), alpha = 0.2, color = NA) +
-    facet_wrap(~cohort_label) +
-    scale_x_continuous(breaks = 1:4, labels = c("2y", "4–6y", "6–9y", "11y")) +
-    labs(x = "Timepoint", y = "BMI z-score", color = "Seropositive", fill = "Seropositive",
-         title = paste("BMI z-score by", sero)) +
-    theme_minimal(base_size = 14)
-})
-
-# Access the first plot as an example:
-bmi_sero_plots[[1]]
-
-# Or save all plots with a loop
-# plotssss<- walk2(bmi_sero_plots, sero_vars, ~ ggsave(paste0(.y, "_bmi_z_plot.png"), .x, width = 8, height = 5))
-
-
-
-library(dplyr)
-library(gt)
-library(tidyr)
-library(stringr)
-
-bmi_sero_gt_compact <- bmi_sero_summary_all %>%
-  mutate(
-    cohort_label = case_when(
-      coh == 1 ~ "BiB",
-      coh == 2 ~ "INMA",
-      coh == 3 ~ "RHEA",
-      TRUE ~ as.character(coh)
-    ),
-    serostatus_label = ifelse(.data[[names(.)[3]]] == 1, "Seropositive", "Seronegative")
-  ) %>%
-  select(sero_var, cohort_label, timepoint, serostatus_label, BMI, BMIz, Overweight) %>%
-  group_by(sero_var, cohort_label, timepoint, serostatus_label) %>%
-  summarise(
-    BMI = first(BMI),
-    BMIz = first(BMIz),
-    Overweight = first(Overweight),
-    .groups = "drop"
-  ) %>%
-  filter(!is.na(serostatus_label)) %>%
-
-  pivot_wider(
-    names_from = serostatus_label,
-    values_from = c(BMI, BMIz, Overweight),
-    names_glue = "{.value} ({serostatus_label})"
-  ) %>%
-  arrange(sero_var, cohort_label, timepoint) %>%
-  gt(groupname_col = "sero_var") %>%
-  tab_header(
-    title = md("**BMI and BMI z-score by Serostatus, Cohort, and Timepoint**"),
-    subtitle = md("Mean (SD) values and overweight prevalence (%) for seropositive and seronegative children")
-  ) %>%
-  cols_label(
-    cohort_label = md("**Cohort**"),
-    timepoint = md("**Timepoint**"),
-    `BMI (Seronegative)` = md("**BMI (Mean (SD)) – Seronegative**"),
-    `BMI (Seropositive)` = md("**BMI (Mean (SD)) – Seropositive**"),
-    `BMIz (Seronegative)` = md("**BMI z-score (Mean (SD)) – Seronegative**"),
-    `BMIz (Seropositive)` = md("**BMI z-score (Mean (SD)) – Seropositive**"),
-    `Overweight (Seronegative)` = md("**Overweight/Obese (%) – Seronegative**"),
-    `Overweight (Seropositive)` = md("**Overweight/Obese (%) – Seropositive**")
-  ) %>%
-  tab_spanner(
-    label = md("**BMI (kg/m²)**"),
-    columns = starts_with("BMI (")
-  ) %>%
-  tab_spanner(
-    label = md("**BMI z-score**"),
-    columns = starts_with("BMIz (")
-  ) %>%
-  tab_spanner(
-    label = md("**Overweight/Obese**"),
-    columns = starts_with("Overweight (")
-  ) %>%
-  tab_options(
-    table.font.size = px(13),
-    heading.title.font.size = px(16),
-    heading.subtitle.font.size = px(13),
-    data_row.padding = px(3),
-    table.width = pct(100)
-  ) %>%
-  tab_style(
-    style = cell_text(weight = "bold"),
-    locations = cells_column_labels(everything())
+ 
+ 
+ 
+  # --- 1. Variables to impute ---
+  # Only raw continuous measurements
+   vars_to_impute <- c("cheight", "cweight", "cabdo", "csubscap","ctriceps", "pre_bmi_c",
+                       "urb_area_id", "smk_p", "edu_m_0", "ethn3_m", "m_age", "breastfed_ever", "preg_smk", "nursery_upto2years")
+ 
+ 
+ 
+  # --- 2. Predictor variables ---
+  # Exclude serology to avoid bias; include baseline/exogenous variables
+  # Also include other anthropometrics to improve imputation
+ 
+ 
+  predicting_vars <-  c("age", "weight_zscore", "height_zscore", "bmi_zscore", "coh",  "sex",  "cbmi", "cheight", "cweight", "cabdo", "csubscap","ctriceps", "pre_bmi_c",
+                        "urb_area_id", "smk_p", "edu_m_0", "ethn3_m", "m_age", "breastfed_ever", "preg_smk", "nursery_upto2years")  
+ 
+ 
+  sero_log_cols <- names(database)[
+    str_detect(names(database), "^log10_.*_$") |
+      names(database) == "log10_EBV_EAD"
+  ]
+ 
+ 
+ 
+ 
+  predicting_vars <- c(predicting_vars, sero_log_cols)
+ 
+ 
+  # --- 3. Setup method vector ---
+   meth <- make.method(imp_data)
+   meth[vars_to_impute] <- "2l.pan"  # multilevel continuous imputation
+   
+   
+   # All columns except vars_to_impute and predicting_vars
+   derived_vars <- setdiff(colnames(imp_data), c(vars_to_impute, predicting_vars, "h_id", "h_id_int"))
+   
+   # Exclude these from imputation
+   meth[derived_vars] <- ""
+   
+   
+   # does the predictors take in account only the individual(h_id) values #sos question
+   
+   
+   
+ 
+ 
+   
+   
+   
+   
+   # --- 4. Build predictor matrix ---
+   pred <- make.predictorMatrix(imp_data)
+   pred[,] <- 0  # initialize
+   
+ 
+ 
+  # Include chosen predictors for each variable to impute
+  for (var in vars_to_impute) {
+    pred[var, predicting_vars] <- 1
+  }
+ 
+ 
+  # Random effects: clustering by household
+  pred[vars_to_impute, "h_id_int"] <- -2
+ 
+ 
+  # Longitudinal structure: timepoint as fixed effect
+  pred[vars_to_impute, "age"] <- 1
+ 
+  pred[vars_to_impute, sero_log_cols] <- 1
+ 
+ 
+  # Prevent self-prediction
+  diag(pred) <- 0
+ 
+ 
+  # Exclude derived variables as predictors
+  pred[, derived_vars] <- 0
+ 
+ 
+ 
+  cat("\nPredictors for each target var (1 = used):\n")
+  print(pred[vars_to_impute, c(predicting_vars, "h_id_int", "age")])
+ 
+ 
+  # --- 5. Run multiple imputation ---
+  # Increase number of imputations and iterations for stability
+ 
+ 
+  # methods etc already defined:
+  # meth, pred, imp_data, bounds_list
+ 
+  post <- make.post(imp_data)
+ 
+  post["cweight"] <- "imp[[j]][, i] <- pmin(pmax(imp[[j]][, i], 1.5), 90)"
+  post["cheight"] <- "imp[[j]][, i] <- pmin(pmax(imp[[j]][, i], 30), 175)"
+ 
+  post["weight_zscore"] <- "imp[[j]][, i] <- pmin(pmax(imp[[j]][, i], -5), 5)"
+  post["height_zscore"] <- "imp[[j]][, i] <- pmin(pmax(imp[[j]][, i], -5), 5)"
+  post["bmi_zscore"]    <- "imp[[j]][, i] <- pmin(pmax(imp[[j]][, i], -5), 5)"
+ 
+  set.seed(123)
+  imputed <- mice(
+    imp_data,
+    m              = 20,
+    method         = meth,
+    predictorMatrix= pred,
+    maxit          = 50,
+    post           = post
   )
+ 
+ 
+  imputed_bckp <- imputed
+ 
+ 
+ 
+ 
+  ######### manipulation #########
+  completed_data <- complete(imputed, "long") %>%
+    group_by(.imp) %>%
+    mutate(bmi_scaled = (cbmi - min(cbmi, na.rm = TRUE)) / (max(cbmi, na.rm = TRUE) - min(cbmi, na.rm = TRUE))) %>%
+    ungroup()
+ 
+ 
+  # extract all imputations in long form (including original .imp = 0)
+  imp_long <- complete(imputed, action = "long", include = TRUE)
+ 
+  # compute BMI per imputation
+  imp_long <- imp_long %>%
+    group_by(.imp) %>%
+    mutate(cbmi = cweight / (cheight/100)^2) %>%   # if you need recalculation
+    ungroup()
+ 
+  # convert back to mids
+  imputed <- as.mids(imp_long)
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+  imputed_long <- complete(imputed, action = "long", include = TRUE)
+ 
+  # Compute bmi_scaled per imputation (including .imp = 0 to preserve structure)
+  imputed_long <- imputed_long %>%
+    group_by(.imp) %>%
+    mutate(bmi_scaled = (cbmi - min(cbmi, na.rm = TRUE)) /
+             (max(cbmi, na.rm = TRUE) - min(cbmi, na.rm = TRUE))) %>%
+    ungroup()
+ 
+  # Convert back to mids object safely
+  imputed <- as.mids(imputed_long)
 
-bmi_sero_gt_compact
+
+
+
+# Trace plot for weight zscore
+plot(imputed, c("weight_zscore"))
+
+# Trace plot for height zscore
+plot(imputed, c("height_zscore"))
+
+plot
+
+# Trace plot for bmi zscore
+plot(imputed, c("bmi_zscore"))
+
+# Stripplot for height
+stripplot(imputed, weight_zscore ~ .imp, pch = 20, cex = 1.2)
+
+# Density plot
+densityplot(imputed, ~ weight_zscore)
+densityplot(imputed, ~ height_zscore)
+densityplot(imputed, ~ bmi_zscore)
+densityplot(imputed, ~ bmi_scaled)
+densityplot(imputed, ~ cbmi)
+densityplot(imputed, ~ cheight)
+densityplot(imputed, ~ cweight)
+#########  #########
+
+
+
+# add z scroe and check if imputation zscore is same as normal zscore(weight, height) done
+
+
+# imputation for serostatus bib timepoint 1-2 , rhea inma timepoint 2+
 
 
 
 
 
 
+# Extract each completed dataset from the mids object and tag with .imp
+imputed_long <- bind_rows(
+  lapply(1:imputed$m, function(i) {
+    complete(imputed, i) %>%
+      mutate(.imp = i)
+  })
+)
 
 
+ggplot(imputed_long, aes(x = weight_zscore, color = factor(.imp))) +
+  geom_density(size = 1, alpha = 0.1) +
+  labs(color = "Imputation") +
+  theme_minimal()
 
+ggplot(imputed_long, aes(x = height_zscore, color = factor(.imp))) +
+  geom_density(size = 1, alpha = 0.1) +
+  labs(color = "Imputation") +
+  theme_minimal()
 
-
-
+ggplot(imputed_long, aes(x = bmi_zscore, color = factor(.imp))) +
+  geom_density(size = 1, alpha = 0.1) +
+  labs(color = "Imputation") +
+  theme_minimal()
 
