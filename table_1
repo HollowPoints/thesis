@@ -1,3 +1,9 @@
+serostatus_all_long <- readRDS("C:/Users/kalampoukasg/Downloads/serostatus_all_long.rds")
+processed_list <- readRDS("C:/Users/kalampoukasg/Downloads/processed_list.rds")
+anthro_long_sero_wide <- readRDS("C:/Users/kalampoukasg/Downloads/anthro_long_sero_wide.rds")
+
+
+
 
 
 clean_sex <- function(df) {
@@ -120,45 +126,94 @@ anthro_obs_num <- summarise_anthro_numeric(closest_points) %>%
 # imputed_list: your list of 20 completed datasets
 library(purrr)
 
-imp_summaries <- imputed_list %>%
-  imap(~ summarise_anthro_numeric(.x) %>% mutate(.imp = .y))
-
+imp_summaries <- processed_list %>%
+  imap(~ summarise_anthro_numeric(.x) %>%
+         mutate(.imp = .y) %>%
+         # remove INMA at 2 years (timepoint == 1)
+         filter(!(cohort_label == "INMA" & timepoint == 1))
+  )
 imp_long <- bind_rows(imp_summaries)
-M <- length(imputed_list)
+
+M <- length(processed_list)
+
 anthro_imp_num <- imp_long %>%
   group_by(timepoint, timepoint_label, cohort_label) %>%
   summarise(
-    N = first(N),
-    Male = first(Male),
+    N      = first(N),
+    Male   = first(Male),
     Female = first(Female),
     
     # BMI
-    BMI_Mean = mean(BMI_Mean),
-    BMI_SD   = sqrt(mean(BMI_SD^2) + (1 + 1 / M) * var(BMI_Mean)),
+    BMI_Mean = mean(BMI_Mean, na.rm = TRUE),
+    BMI_SD   = {
+      wvar <- mean(BMI_SD^2, na.rm = TRUE)          # within-imputation variance
+      bvar <- var(BMI_Mean,  na.rm = TRUE)          # between-imputation variance
+      m_non_na <- sum(!is.na(BMI_Mean))
+      if (is.na(wvar)) {
+        NA_real_
+      } else if (m_non_na < 2 || is.na(bvar)) {
+        sqrt(wvar)                                  # fall back to within only
+      } else {
+        sqrt(wvar + (1 + 1 / M) * bvar)             # Rubin-style pooling
+      }
+    },
     BMI_n    = first(BMI_n),
     
     # BMI z-score
-    BMIz_Mean = mean(BMIz_Mean),
-    BMIz_SD   = sqrt(mean(BMIz_SD^2) + (1 + 1 / M) * var(BMIz_Mean)),
+    BMIz_Mean = mean(BMIz_Mean, na.rm = TRUE),
+    BMIz_SD   = {
+      wvar <- mean(BMIz_SD^2, na.rm = TRUE)
+      bvar <- var(BMIz_Mean,  na.rm = TRUE)
+      m_non_na <- sum(!is.na(BMIz_Mean))
+      if (is.na(wvar)) {
+        NA_real_
+      } else if (m_non_na < 2 || is.na(bvar)) {
+        sqrt(wvar)
+      } else {
+        sqrt(wvar + (1 + 1 / M) * bvar)
+      }
+    },
     BMIz_n    = first(BMIz_n),
     
     # Height z-score
-    Heightz_Mean = mean(Heightz_Mean),
-    Heightz_SD   = sqrt(mean(Heightz_SD^2) + (1 + 1 / M) * var(Heightz_Mean)),
+    Heightz_Mean = mean(Heightz_Mean, na.rm = TRUE),
+    Heightz_SD   = {
+      wvar <- mean(Heightz_SD^2, na.rm = TRUE)
+      bvar <- var(Heightz_Mean,  na.rm = TRUE)
+      m_non_na <- sum(!is.na(Heightz_Mean))
+      if (is.na(wvar)) {
+        NA_real_
+      } else if (m_non_na < 2 || is.na(bvar)) {
+        sqrt(wvar)
+      } else {
+        sqrt(wvar + (1 + 1 / M) * bvar)
+      }
+    },
     Heightz_n    = first(Heightz_n),
     
     # WHtR
-    WHtR_Mean = mean(WHtR_Mean),
-    WHtR_SD   = sqrt(mean(WHtR_SD^2) + (1 + 1 / M) * var(WHtR_Mean)),
+    WHtR_Mean = mean(WHtR_Mean, na.rm = TRUE),
+    WHtR_SD   = {
+      wvar <- mean(WHtR_SD^2, na.rm = TRUE)
+      bvar <- var(WHtR_Mean,  na.rm = TRUE)
+      m_non_na <- sum(!is.na(WHtR_Mean))
+      if (is.na(wvar)) {
+        NA_real_
+      } else if (m_non_na < 2 || is.na(bvar)) {
+        sqrt(wvar)
+      } else {
+        sqrt(wvar + (1 + 1 / M) * bvar)
+      }
+    },
     WHtR_n    = first(WHtR_n),
     
     # Categorical: pool percentages, then back-calculate n
-    Stunted_pct    = mean(Stunted_pct),
-    Thin_pct       = mean(Thin_pct),
-    Normal_pct     = mean(Normal_pct),
-    Overweight_pct = mean(Overweight_pct),
-    Obese_pct      = mean(Obese_pct),
-    CentralOb_pct  = mean(CentralOb_pct),
+    Stunted_pct    = mean(Stunted_pct,    na.rm = TRUE),
+    Thin_pct       = mean(Thin_pct,       na.rm = TRUE),
+    Normal_pct     = mean(Normal_pct,     na.rm = TRUE),
+    Overweight_pct = mean(Overweight_pct, na.rm = TRUE),
+    Obese_pct      = mean(Obese_pct,      na.rm = TRUE),
+    CentralOb_pct  = mean(CentralOb_pct,  na.rm = TRUE),
     
     .groups = "drop"
   ) %>%
@@ -169,7 +224,7 @@ anthro_imp_num <- imp_long %>%
     Overweight_n = round(Overweight_pct / 100 * N),
     Obese_n      = round(Obese_pct      / 100 * N),
     CentralOb_n  = round(CentralOb_pct  / 100 * N),
-    dataset = "Imputed (MI pooled)"
+    dataset      = "Imputed (MI pooled)"
   )
 
 
@@ -250,18 +305,3 @@ anthro_table_combined <- anthro_all %>%
   )
 
 anthro_table_combined
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
