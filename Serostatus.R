@@ -1,4 +1,4 @@
-obesity_all_long$age <- obesity_all_long$agecd_cgrowth / 365
+besity_all_long$age <- obesity_all_long$agecd_cgrowth / 365
 
 obesity_all_long <- obesity_all_long %>%
   filter(agecd_cgrowth != 0)
@@ -13,23 +13,23 @@ serostatus_all_long <- serostatus_all_long %>%
 
 
 propagate_sero_nn_multi <- function(anthro, sero, virus_vec) {
-  
+ 
   anthro_out <- anthro  # start with the input dataset
-  
+ 
   for (virus in virus_vec) {
-    
+   
     sero_col <- rep(NA_integer_, nrow(anthro))  # empty vector for this virus
     sero_split <- split(sero, sero$h_id)
-    
+   
     for(i in seq_len(nrow(anthro))) {
-      
+     
       h <- anthro$h_id[i]
       age_i <- anthro$age[i]
-      
+     
       if(!h %in% names(sero_split)) next
       s <- sero_split[[as.character(h)]]
       s_status <- s[[virus]]
-      
+     
       prev_idx <- which(s$age <= age_i)
       if(length(prev_idx) > 0) {
         prev_row <- prev_idx[which.max(s$age[prev_idx])]
@@ -38,7 +38,7 @@ propagate_sero_nn_multi <- function(anthro, sero, virus_vec) {
       } else {
         prev_status <- NA
       }
-      
+     
       next_idx <- which(s$age >= age_i)
       if(length(next_idx) > 0) {
         next_row <- next_idx[which.min(s$age[next_idx])]
@@ -47,7 +47,7 @@ propagate_sero_nn_multi <- function(anthro, sero, virus_vec) {
       } else {
         next_status <- NA
       }
-      
+     
       if(!is.na(prev_status) & !is.na(next_status)) {
         if(prev_status == next_status) {
           sero_col[i] <- prev_status
@@ -61,11 +61,11 @@ propagate_sero_nn_multi <- function(anthro, sero, virus_vec) {
         sero_col[i] <- ifelse(next_status == 0, 0L, NA_integer_)
       }
     }
-    
+   
     # Attach the new column to the output dataset
     anthro_out[[paste0(virus, "_sero")]] <- sero_col
   }
-  
+ 
   return(anthro_out)  # just one dataset with 9 new columns
 }
 
@@ -124,16 +124,23 @@ processed_list <- lapply(
     cbmi_min <- min(df$cbmi, na.rm = TRUE)
     cbmi_max <- max(df$cbmi, na.rm = TRUE)
     denom    <- cbmi_max - cbmi_min
-    
+   
     df$bmi_scaled <- if (is.finite(denom) && denom > 0) {
       (df$cbmi - cbmi_min) / denom
     } else {
       NA_real_
     }
-    
+   
     df
   }
 )
+
+##
+processed_list_20 <- lapply(processed_list, function(df) df[1:20, , drop = FALSE])
+
+saveRDS(processed_list, "processed_list.rds")
+saveRDS(anthro_long_sero_wide, "anthro_long_sero_wide.rds")
+saveRDS(serostatus_all_long, "serostatus_all_long.rds")
 
 
 
@@ -259,265 +266,253 @@ ggplot(df_hr, aes(x = imp, y = HR)) +
   )
 
 
+## first descriptive statistics imputed vs non-imputed (per cohort)
+
+
+# maybe start with 4 year exposure, as one timepoint
+## add the categorical variable of bmi(normal, obese etc), maybe skinfold, w circumference
+## exposure bmi 3-5 age, (older child for duplicates)
+## minimally adjusted for cofounders(sex, cohort, maybe exact age of exposure bmi)
+## dag adjusted model with all relevant confounders
 
 
 
+###
 
-
-closest_points <-propagate_sero_nn_multi(closest_points, serostatus_all_long, virus_vec)
-
-
-
-
-
-# Example for Adv36; can be repeated for other viruses
-bmi_sero_summary <- closest_points %>%
-  select(h_id, age, timepoint, sex, coh, bmi_zscore, cbmi, bmi_category, cut_Avd36_sero) %>%
-  filter(!is.na(cut_Avd36_sero)) %>%   # only children with serostatus
-  group_by(timepoint, cut_Avd36_sero) %>%
-  summarise(
-    N = n(),
-    BMI_Mean = mean(cbmi, na.rm = TRUE),
-    BMI_SD = sd(cbmi, na.rm = TRUE),
-    BMIz_Mean = mean(bmi_zscore, na.rm = TRUE),
-    BMIz_SD = sd(bmi_zscore, na.rm = TRUE),
-    Overweight_n = sum(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE),
-    Overweight_pct = mean(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE)*100,
-    .groups = "drop"
-  ) %>%
-  mutate(
-    BMI = sprintf("%.1f (%.1f)", BMI_Mean, BMI_SD),
-    BMIz = sprintf("%.2f (%.2f)", BMIz_Mean, BMIz_SD),
-    Overweight = sprintf("%d (%.1f%%)", Overweight_n, Overweight_pct)
-  ) %>%
-  arrange(timepoint, cut_Avd36_sero)
-
-
-
-
-
-
-bmi_sero_summary_cohort <- closest_points %>%
-  select(h_id, age, timepoint, sex, coh, bmi_zscore, cbmi, bmi_category, cut_Avd36_sero) %>%
-  filter(!is.na(cut_Avd36_sero)) %>%
-  group_by(timepoint, coh, cut_Avd36_sero) %>%
-  summarise(
-    N = n(),
-    BMI_Mean = mean(cbmi, na.rm = TRUE),
-    BMI_SD = sd(cbmi, na.rm = TRUE),
-    BMIz_Mean = mean(bmi_zscore, na.rm = TRUE),
-    BMIz_SD = sd(bmi_zscore, na.rm = TRUE),
-    Overweight_n = sum(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE),
-    Overweight_pct = mean(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE)*100,
-    .groups = "drop"
-  ) %>%
-  mutate(
-    BMI = sprintf("%.1f (%.1f)", BMI_Mean, BMI_SD),
-    BMIz = sprintf("%.2f (%.2f)", BMIz_Mean, BMIz_SD),
-    Overweight = sprintf("%d (%.1f%%)", Overweight_n, Overweight_pct),
-    cohort_label = case_when(
-      coh == 1 ~ "BiB",
-      coh == 2 ~ "INMA",
-      coh == 3 ~ "RHEA",
-      TRUE ~ as.character(coh)
-    )
-  ) %>%
-  arrange(timepoint, cohort_label, cut_Avd36_sero)
-
-
-
-
-library(ggplot2)
-
-# Prepare data for plotting (mean per timepoint)
-plot_data <- closest_points %>%
-  select(h_id, age, timepoint, bmi_zscore, cut_Avd36_sero, coh) %>%
-  filter(!is.na(cut_Avd36_sero)) %>%
-  group_by(timepoint, cut_Avd36_sero, coh) %>%
-  summarise(
-    BMIz_mean = mean(bmi_zscore, na.rm = TRUE),
-    BMIz_se = sd(bmi_zscore, na.rm = TRUE)/sqrt(n()),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    cohort_label = case_when(
-      coh == 1 ~ "BiB",
-      coh == 2 ~ "INMA",
-      coh == 3 ~ "RHEA",
-      TRUE ~ as.character(coh)
-    )
-  )
-
-ggplot(plot_data, aes(x = timepoint, y = BMIz_mean, color = factor(cut_Avd36_sero), group = cut_Avd36_sero)) +
-  geom_line(linewidth = 1) +      # use linewidth instead of size
-  geom_point(size = 2) +
-  geom_ribbon(aes(ymin = BMIz_mean - 1.96*BMIz_se,
-                  ymax = BMIz_mean + 1.96*BMIz_se,
-                  fill = factor(cut_Avd36_sero)), alpha = 0.2, color = NA) +
-  facet_wrap(~cohort_label) +
-  scale_x_continuous(breaks = 1:4, labels = c("2y", "4–6y", "6–9y", "11y")) +
-  labs(x = "Timepoint", y = "BMI z-score", color = "Seropositive", fill = "Seropositive") +
-  theme_minimal(base_size = 14)
-
-
-
-
-
-
-
-
-
-sero_vars <- c("CMV_class_sero", "cut_VZV_sero", "cut_Avd36_sero",
-               "EBV_class_sero", "cut_BK_sero", "cut_JC_sero",
-               "cut_KI_sero", "cut_WU_sero", "cut_MCV_sero")
-
-# Create summary tables for each serovar
-bmi_sero_summaries <- map(sero_vars, function(sero) {
-  closest_points %>%
-    select(h_id, age, timepoint, sex, coh, bmi_zscore, cbmi, bmi_category, all_of(sero)) %>%
-    filter(!is.na(.data[[sero]])) %>%
-    group_by(timepoint, coh, .data[[sero]]) %>%
-    summarise(
-      N = n(),
-      BMI_Mean = mean(cbmi, na.rm = TRUE),
-      BMI_SD = sd(cbmi, na.rm = TRUE),
-      BMIz_Mean = mean(bmi_zscore, na.rm = TRUE),
-      BMIz_SD = sd(bmi_zscore, na.rm = TRUE),
-      Overweight_n = sum(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE),
-      Overweight_pct = mean(bmi_category %in% c("Overweight", "Obese"), na.rm = TRUE)*100,
-      .groups = "drop"
-    ) %>%
-    mutate(
-      BMI = sprintf("%.1f (%.1f)", BMI_Mean, BMI_SD),
-      BMIz = sprintf("%.2f (%.2f)", BMIz_Mean, BMIz_SD),
-      Overweight = sprintf("%d (%.1f%%)", Overweight_n, Overweight_pct),
-      cohort_label = case_when(
-        coh == 1 ~ "BiB",
-        coh == 2 ~ "INMA",
-        coh == 3 ~ "RHEA",
-        TRUE ~ as.character(coh)
-      ),
-      sero_var = sero
-    ) %>%
-    arrange(timepoint, cohort_label, .data[[sero]])
-})
-
-# Combine into one table if needed
-bmi_sero_summary_all <- bind_rows(bmi_sero_summaries)
-
-
-# Create plots for each serovar
-bmi_sero_plots <- map(sero_vars, function(sero) {
-  plot_data <- closest_points %>%
-    select(h_id, age, timepoint, bmi_zscore, coh, all_of(sero)) %>%
-    filter(!is.na(.data[[sero]])) %>%
-    group_by(timepoint, .data[[sero]], coh) %>%
-    summarise(
-      BMIz_mean = mean(bmi_zscore, na.rm = TRUE),
-      BMIz_se = sd(bmi_zscore, na.rm = TRUE)/sqrt(n()),
-      .groups = "drop"
-    ) %>%
-    mutate(
-      cohort_label = case_when(
-        coh == 1 ~ "BiB",
-        coh == 2 ~ "INMA",
-        coh == 3 ~ "RHEA",
-        TRUE ~ as.character(coh)
-      )
-    )
-  
-  ggplot(plot_data, aes(x = timepoint, y = BMIz_mean, color = factor(.data[[sero]]), group = .data[[sero]])) +
-    geom_line(linewidth = 1) +
-    geom_point(size = 2) +
-    geom_ribbon(aes(ymin = BMIz_mean - 1.96*BMIz_se,
-                    ymax = BMIz_mean + 1.96*BMIz_se,
-                    fill = factor(.data[[sero]])), alpha = 0.2, color = NA) +
-    facet_wrap(~cohort_label) +
-    scale_x_continuous(breaks = 1:4, labels = c("2y", "4–6y", "6–9y", "11y")) +
-    labs(x = "Timepoint", y = "BMI z-score", color = "Seropositive", fill = "Seropositive",
-         title = paste("BMI z-score by", sero)) +
-    theme_minimal(base_size = 14)
-})
-
-# Access the first plot as an example:
-bmi_sero_plots[[1]]
-
-# Or save all plots with a loop
-# plotssss<- walk2(bmi_sero_plots, sero_vars, ~ ggsave(paste0(.y, "_bmi_z_plot.png"), .x, width = 8, height = 5))
-
-
+## --- 0. Setup -------------------------------------------------------------
 
 library(dplyr)
-library(gt)
-library(tidyr)
-library(stringr)
+library(purrr)
+library(ggplot2)
 
-bmi_sero_gt_compact <- bmi_sero_summary_all %>%
-  mutate(
-    cohort_label = case_when(
-      coh == 1 ~ "BiB",
-      coh == 2 ~ "INMA",
-      coh == 3 ~ "RHEA",
-      TRUE ~ as.character(coh)
-    ),
-    serostatus_label = ifelse(.data[[names(.)[3]]] == 1, "Seropositive", "Seronegative")
-  ) %>%
-  select(sero_var, cohort_label, timepoint, serostatus_label, BMI, BMIz, Overweight) %>%
-  group_by(sero_var, cohort_label, timepoint, serostatus_label) %>%
-  summarise(
-    BMI = first(BMI),
-    BMIz = first(BMIz),
-    Overweight = first(Overweight),
-    .groups = "drop"
-  ) %>%
-  filter(!is.na(serostatus_label)) %>%
+## processed_list: list of 20 imputed + post-processed data frames
+## Assumptions:
+## - Each df has: h_id, age, bmi_scaled, sex, coh
+## - Nine serology outcomes ending in "_sero", coded 0/1/NA
 
-  pivot_wider(
-    names_from = serostatus_label,
-    values_from = c(BMI, BMIz, Overweight),
-    names_glue = "{.value} ({serostatus_label})"
-  ) %>%
-  arrange(sero_var, cohort_label, timepoint) %>%
-  gt(groupname_col = "sero_var") %>%
-  tab_header(
-    title = md("**BMI and BMI z-score by Serostatus, Cohort, and Timepoint**"),
-    subtitle = md("Mean (SD) values and overweight prevalence (%) for seropositive and seronegative children")
-  ) %>%
-  cols_label(
-    cohort_label = md("**Cohort**"),
-    timepoint = md("**Timepoint**"),
-    `BMI (Seronegative)` = md("**BMI (Mean (SD)) – Seronegative**"),
-    `BMI (Seropositive)` = md("**BMI (Mean (SD)) – Seropositive**"),
-    `BMIz (Seronegative)` = md("**BMI z-score (Mean (SD)) – Seronegative**"),
-    `BMIz (Seropositive)` = md("**BMI z-score (Mean (SD)) – Seropositive**"),
-    `Overweight (Seronegative)` = md("**Overweight/Obese (%) – Seronegative**"),
-    `Overweight (Seropositive)` = md("**Overweight/Obese (%) – Seropositive**")
-  ) %>%
-  tab_spanner(
-    label = md("**BMI (kg/m²)**"),
-    columns = starts_with("BMI (")
-  ) %>%
-  tab_spanner(
-    label = md("**BMI z-score**"),
-    columns = starts_with("BMIz (")
-  ) %>%
-  tab_spanner(
-    label = md("**Overweight/Obese**"),
-    columns = starts_with("Overweight (")
-  ) %>%
-  tab_options(
-    table.font.size = px(13),
-    heading.title.font.size = px(16),
-    heading.subtitle.font.size = px(13),
-    data_row.padding = px(3),
-    table.width = pct(100)
-  ) %>%
-  tab_style(
-    style = cell_text(weight = "bold"),
-    locations = cells_column_labels(everything())
+
+## --- 1. Make sure bmi_scaled exists and is consistent in all datasets -----
+
+processed_list <- lapply(processed_list, function(df) {
+  if (!"bmi_scaled" %in% names(df)) {
+    df %>%
+      mutate(
+        bmi_scaled = (cbmi - min(cbmi, na.rm = TRUE)) /
+          (max(cbmi, na.rm = TRUE) - min(cbmi, na.rm = TRUE))
+      )
+  } else {
+    df
+  }
+})
+
+
+## --- 2. Identify serology outcomes ---------------------------------------
+
+outcome_vars <- names(processed_list[[1]])[grepl("_sero$", names(processed_list[[1]]))]
+outcome_vars
+# e.g. "CMV_class_sero", "cut_VZV_sero", ..., "cut_MCV_sero"
+
+
+## --- 3. Fit logistic models for a single outcome across imputations ------
+
+fit_logit_for_outcome <- function(outcome_name, data_list) {
+  # For each imputed dataset, fit:
+  #   outcome ~ bmi_scaled + sex + coh + age   (logistic)
+  lapply(data_list, function(df) {
+   
+    # Drop rows with missing outcome or key covariates
+    df2 <- df %>%
+      filter(
+        !is.na(.data[[outcome_name]]),
+        !is.na(bmi_scaled),
+        !is.na(sex),
+        !is.na(coh),
+        !is.na(age)
+      )
+   
+    # If no variation in outcome, model is not estimable
+    if (dplyr::n_distinct(df2[[outcome_name]]) < 2) {
+      return(NULL)
+    }
+   
+    # Fit logistic regression
+    tryCatch(
+      glm(
+        formula = as.formula(paste0(outcome_name, " ~ bmi_scaled + sex + coh + age")),
+        family  = binomial,
+        data    = df2
+      ),
+      error = function(e) NULL
+    )
+  })
+}
+
+
+## --- 4. Rubin pooling for bmi_scaled from list of glm models --------------
+
+pool_bmi_scaled_logit <- function(glm_list, outcome_name) {
+  # Remove failed / NULL fits
+  glm_list <- glm_list[!vapply(glm_list, is.null, logical(1))]
+ 
+  if (length(glm_list) <= 1) {
+    return(
+      data.frame(
+        outcome   = outcome_name,
+        term      = "bmi_scaled",
+        beta      = NA_real_,
+        se        = NA_real_,
+        df        = NA_real_,
+        OR        = NA_real_,
+        CI_lower  = NA_real_,
+        CI_upper  = NA_real_,
+        z_value   = NA_real_,
+        p_value   = NA_real_
+      )
+    )
+  }
+ 
+  # Extract beta and variance of bmi_scaled
+  beta_vec <- sapply(glm_list, function(fit) {
+    coef(fit)[["bmi_scaled"]]
+  })
+ 
+  var_vec <- sapply(glm_list, function(fit) {
+    vcov(fit)["bmi_scaled", "bmi_scaled"]
+  })
+ 
+  # Drop NAs
+  keep <- !is.na(beta_vec) & !is.na(var_vec)
+  beta_vec <- beta_vec[keep]
+  var_vec  <- var_vec[keep]
+  m <- length(beta_vec)
+ 
+  if (m <= 1) {
+    return(
+      data.frame(
+        outcome   = outcome_name,
+        term      = "bmi_scaled",
+        beta      = NA_real_,
+        se        = NA_real_,
+        df        = NA_real_,
+        OR        = NA_real_,
+        CI_lower  = NA_real_,
+        CI_upper  = NA_real_,
+        z_value   = NA_real_,
+        p_value   = NA_real_
+      )
+    )
+  }
+ 
+  # Rubin's rules for logistic regression (same math as for linear/Cox beta)
+  Q_bar <- mean(beta_vec)   # pooled beta
+  W     <- mean(var_vec)    # within-imputation variance
+  B     <- var(beta_vec)    # between-imputation variance
+  T_var <- W + (1 + 1/m) * B
+  se    <- sqrt(T_var)
+ 
+  # Barnard–Rubin df
+  df <- (m - 1) * (1 + W / ((1 + 1/m) * B))^2
+ 
+  # z (or t) statistic and p-value
+  z_val <- Q_bar / se
+  # With large m, normal approx is fine, but keep df-based t for consistency
+  p_val <- 2 * pt(-abs(z_val), df = df)
+ 
+  # Odds ratios and 95% CI
+  OR    <- exp(Q_bar)
+  lower <- exp(Q_bar - qt(0.975, df) * se)
+  upper <- exp(Q_bar + qt(0.975, df) * se)
+ 
+  data.frame(
+    outcome   = outcome_name,
+    term      = "bmi_scaled",
+    beta      = Q_bar,
+    se        = se,
+    df        = df,
+    OR        = OR,
+    CI_lower  = lower,
+    CI_upper  = upper,
+    z_value   = z_val,
+    p_value   = p_val
+  )
+}
+
+
+## --- 5. Fit and pool across all 9 serology outcomes ----------------------
+
+# 5a. Fit all logistic models per outcome
+glm_lists_all <- lapply(outcome_vars, fit_logit_for_outcome, data_list = processed_list)
+names(glm_lists_all) <- outcome_vars
+
+# 5b. Pool bmi_scaled effect for each outcome
+pooled_results_bmi_scaled <- bind_rows(
+  Map(pool_bmi_scaled_logit, glm_lists_all, outcome_vars)
+)
+
+pooled_results_bmi_scaled
+
+
+## --- 6. Forest plot of pooled OR(bmi_scaled) by serology outcome ---------
+
+# Clean nicer labels if you want (optional)
+pooled_results_bmi_scaled$outcome_label <- pooled_results_bmi_scaled$outcome
+
+ggplot(
+  pooled_results_bmi_scaled %>% filter(!is.na(OR)),
+  aes(x = outcome_label, y = OR)
+) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), width = 0.15) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  coord_flip() +
+  theme_minimal() +
+  labs(
+    title = "Pooled odds ratio of BMI (scaled) for each serology outcome",
+    x = "Serology outcome",
+    y = "Odds Ratio (per 0–1 BMI scale)"
   )
 
-bmi_sero_gt_compact
+
+## --- 7. Optional: show per-imputation OR(bmi_scaled) for each outcome ----
+
+hr_long <- bind_rows(
+  lapply(seq_along(outcome_vars), function(j) {
+    out_name <- outcome_vars[j]
+    glm_list <- glm_lists_all[[j]]
+    glm_list <- glm_list[!vapply(glm_list, is.null, logical(1))]
+   
+    if (length(glm_list) == 0) {
+      return(data.frame(
+        outcome = character(0),
+        imp     = integer(0),
+        OR      = numeric(0)
+      ))
+    }
+   
+    OR_each <- sapply(glm_list, function(fit) {
+      exp(coef(fit)[["bmi_scaled"]])
+    })
+   
+    data.frame(
+      outcome = out_name,
+      imp     = seq_along(OR_each),
+      OR      = OR_each
+    )
+  })
+)
+
+ggplot(hr_long %>% filter(!is.na(OR)),
+       aes(x = imp, y = OR, group = outcome, colour = outcome)) +
+  geom_line(alpha = 0.4) +
+  geom_point() +
+  theme_minimal() +
+  labs(
+    title = "OR(bmi_scaled) across imputations for each serology outcome",
+    x = "Imputation index",
+    y = "Odds Ratio"
+  )
+
+ 
 
 
 
@@ -525,9 +520,4 @@ bmi_sero_gt_compact
 
 
 
-
-
-
-
-
-
+##
