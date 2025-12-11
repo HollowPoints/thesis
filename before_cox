@@ -1,0 +1,190 @@
+## 
+processed_list_bckp <- processed_list
+
+processed_list <- processed_list %>%
+  map(~ .x %>%
+        assign_anthro_scores() %>%
+        assign_anthroplus_scores() %>%
+        clean_zscores() %>%
+        classify_bmi_category() %>%
+        classify_central_obesity() %>%
+        classify_stunting() 
+  )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+library(dplyr)
+library(rlang)
+
+build_surv_data <- function(df, virus_var, exposure_timepoint = 1) {
+  virus_sym <- sym(virus_var)
+  
+  # 1. Pick baseline (4–6 years window, timepoint == 2) and choose the *latest* age in that window
+  baseline <- df %>%
+    filter(timepoint == exposure_timepoint) %>%
+    arrange(h_id_int, age) %>%
+    group_by(h_id_int) %>%
+    slice_tail(n = 1) %>%              # oldest measurement within 4–6 years
+    ungroup() %>%
+    mutate(
+      age_bmi          = age,
+      virus_baseline   = !!virus_sym    # serostatus at baseline
+    )
+  
+  # 2. Keep only children who are seronegative at baseline for that virus
+  baseline_eligible <- baseline %>%
+    filter(virus_baseline == 0) %>%
+    select(
+      h_id_int,
+      age_bmi,
+      bmi_scaled,
+      bmi_category,
+      whtr,
+      central_obesity,
+      sex,
+      coh
+    )
+  
+  # If no eligible kids, return empty df
+  if (nrow(baseline_eligible) == 0) {
+    return(
+      tibble(
+        h_id_int = integer(),
+        age_start = numeric(),
+        age_end = numeric(),
+        event = integer(),
+        bmi_scaled = numeric(),
+        bmi_category = character(),
+        whtr = numeric(),
+        central_obesity = logical(),
+        sex = character(),
+        coh = numeric(),
+        age_bmi = numeric()
+      )
+    )
+  }
+  
+  # 3. Restrict full longitudinal data to these children, and to ages >= baseline age
+  df_post <- df %>%
+    inner_join(baseline_eligible, by = "h_id_int", suffix = c("", "_base")) %>%
+    filter(age >= age_bmi)             # left truncation at BMI age
+  
+  # 4. Collapse to one row per child: start, end, event + exposures/covariates
+  surv_df <- df_post %>%
+    group_by(h_id_int) %>%
+    summarise(
+      age_start = first(age_bmi),
+      age_end = {
+        # earliest age with seroconversion after baseline
+        event_ages <- age[ (!!virus_sym) == 1 & !is.na(!!virus_sym) ]
+        if (length(event_ages) > 0) {
+          min(event_ages, na.rm = TRUE)
+        } else {
+          max(age, na.rm = TRUE)       # censor at last observed age
+        }
+      },
+      event = as.integer(any( (!!virus_sym) == 1, na.rm = TRUE)),
+      
+      bmi_scaled      = first(bmi_scaled),
+      bmi_category    = first(bmi_category),
+      whtr            = first(whtr),
+      central_obesity = first(central_obesity),
+      sex             = first(sex),
+      coh             = first(coh),
+      age_bmi         = first(age_bmi),
+      .groups = "drop"
+    ) %>%
+    # guard against degenerate cases
+    filter(age_end > age_start)
+  
+  surv_df
+}
+
+
+
+virus <- "cut_Avd36_sero"
+
+surv_list_ebv <- processed_list %>%
+  purrr::imap(~ {
+    df_surv <- build_surv_data(.x, virus_var = virus, exposure_timepoint = 2)
+    df_surv$.imp <- .y   # track imputation index
+    df_surv
+  })
+
+# One big long data frame if needed
+surv_ebv_long <- bind_rows(surv_list_ebv)
+
+
+library(survival)
+
+cox_formula_min <- Surv(age_start, age_end, event) ~
+  bmi_scaled + sex + factor(coh) + age_bmi
+
+fit_list_ebv <- lapply(surv_list_ebv, function(dat) {
+  coxph(cox_formula_min, data = dat)
+})
+
+
+
+
+
+
+pool_bmi_effect <- function(fit_list, coef_name = "bmi_scaled") {
+  M <- length(fit_list)
+  
+  betas <- sapply(fit_list, function(fit) {
+    coef(fit)[coef_name]
+  })
+  
+  vars <- sapply(fit_list, function(fit) {
+    vcov(fit)[coef_name, coef_name]
+  })
+  
+  q_bar <- mean(betas)                # average beta
+  W     <- mean(vars)                 # within-imputation variance
+  B     <- var(betas)                 # between-imputation variance
+  T_var <- W + (1 + 1 / M) * B        # total variance
+  
+  se <- sqrt(T_var)
+  HR <- exp(q_bar)
+  CI <- exp(q_bar + c(-1, 1) * 1.96 * se)
+  
+  list(
+    beta = q_bar,
+    se   = se,
+    HR   = HR,
+    CI   = CI
+  )
+}
+
+pooled_ebv_min <- pool_bmi_effect(fit_list_ebv, coef_name = "bmi_scaled")
+pooled_ebv_min
+
+
+
+
+
+
+
+
+
+
+
+
+
+
