@@ -122,6 +122,63 @@ clean_zscores <- function(df) {
   # Remove flagged rows
   df <- df[!remove_rows, ]
   
+}
+
+
+
+
+
+
+####################################################################################################
+# obsolete 
+clean_zscores <- function(df) {
+  # Capture original object name as string
+  df_name <- deparse(substitute(df))
+  
+  # Define z-score columns
+  z_cols_under5 <- c("bmi_zscore", "weight_zscore", "height_zscore", "tris_zscore", "subscap_zscore")
+  z_cols_5to19  <- c("bmi_zscore", "weight_zscore", "height_zscore")
+  
+  log_list <- list()
+  remove_rows <- logical(nrow(df))  # track rows to remove
+  
+  for (i in seq_len(nrow(df))) {
+    age <- df$agecd_cgrowth[i]
+    id  <- df$h_id[i]
+    
+    if (is.na(age)) next
+    
+    z_cols <- if (age <= 1826) z_cols_under5 else z_cols_5to19
+    z_values <- unlist(df[i, z_cols])
+    
+    outlier_flags <- abs(z_values) >= 5 & !is.na(z_values)
+    
+    if (all(outlier_flags)) {
+      remove_rows[i] <- TRUE
+      log_list[[length(log_list) + 1]] <- data.frame(
+        h_id = id,
+        agecd_cgrowth = age,
+        removed = paste(z_cols, collapse = ","),
+        values = paste(round(z_values, 2), collapse = ","),
+        action = "row_removed"
+      )
+    } else if (any(outlier_flags)) {
+      outlier_cols <- z_cols[outlier_flags]
+      outlier_vals <- z_values[outlier_flags]
+      df[i, outlier_cols] <- NA
+      log_list[[length(log_list) + 1]] <- data.frame(
+        h_id = id,
+        agecd_cgrowth = age,
+        removed = paste(outlier_cols, collapse = ","),
+        values = paste(round(outlier_vals, 2), collapse = ","),
+        action = "values_set_to_NA"
+      )
+    }
+  }
+  
+  # Remove flagged rows
+  df <- df[!remove_rows, ]
+  
   # Create exclusion log
   exclusion_log <- if (length(log_list) > 0) do.call(rbind, log_list) else data.frame()
   
@@ -132,7 +189,8 @@ clean_zscores <- function(df) {
   assign(paste0("exclusionlog_", df_name), exclusion_log, envir = .GlobalEnv)
 }
 
-
+####################################################################################################
+# obsolete 
 
 
 # function to classify children as Normal, Overweight, Obese based on z score , depending on age < 5 and age > 5
@@ -615,9 +673,3 @@ run_bidirectional_models_table <- function(data, virus_vars) {
   
   return(results_table)
 }
-
-
-
-
-
-
