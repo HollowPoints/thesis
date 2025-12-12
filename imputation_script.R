@@ -109,7 +109,7 @@ database2 <- database %>%
 
 # 3) Loop over each virus column and keep only the closest row per h_id × timepoint_label × sero_age
 for (v in sero_vars) {
- 
+  
   keep_ids <- database2 %>%
     filter(
       !is.na(.data[[v]]),
@@ -124,10 +124,10 @@ for (v in sero_vars) {
     slice_min(order_by = dist, n = 1, with_ties = FALSE) %>%
     ungroup() %>%
     pull(.rowid)
- 
+  
   # mask for rows that should be cleared for this virus
   mask <- !(database2$.rowid %in% keep_ids) & !is.na(database2[[v]])
- 
+  
   # set virus to NA on all "extra" rows
   database2[[v]][mask] <- NA_real_
 }
@@ -212,25 +212,25 @@ n_new <- nrow(unmatched_wide)
 if (n_new > 0) {
   # empty frame with same columns
   template <- database[0, , drop = FALSE]
- 
+  
   # create NA-filled df with same columns
   new_rows <- as.data.frame(
     matrix(NA, nrow = n_new, ncol = ncol(template)),
     stringsAsFactors = FALSE
   )
   names(new_rows) <- names(template)
- 
+  
   # fill key fields
   new_rows$h_id <- unmatched_wide$h_id
   new_rows$age  <- unmatched_wide$age_sero
- 
+  
   # copy over virus columns (and any other matching names)
   for (col in names(unmatched_wide)) {
     if (col %in% names(new_rows)) {
       new_rows[[col]] <- unmatched_wide[[col]]
     }
   }
- 
+  
   # ---- 8. Bind new serology-only rows onto the database ----
   database_expanded <- bind_rows(database, new_rows)
 } else {
@@ -243,7 +243,7 @@ if (n_new > 0) {
 fixed_vars <- c(
   "sex.x", "coh", "pre_bmi_c", "urb_area_id", "smk_p",
   "ethn3_m", "edu_m_0", "m_age", "breastfed_ever", "birth_head_circum", "birth_weight" ,  
-  "birth_length" ,  "preg_smk", "nursery_upto2years", "sex" ,"parity_m"
+  "birth_length" ,  "preg_smk", "nursery_upto2years", "sex" ,"parity_m" 
 )
 
 
@@ -282,7 +282,7 @@ database <- database_expanded
 
 
 
-# Correlation
+# Correlation 
 
 
 cor_matrix <- cor(select_if(database, is.numeric), use = "pairwise.complete.obs")
@@ -310,81 +310,81 @@ cor_selected <- cor_long %>%
 # Extract unique variable names from these selected pairs
 selected_vars <- unique(c(cor_selected$var1, cor_selected$var2))
 
- 
+  
 
 
- 
- 
- 
- 
- 
+  
+  
+  
+  
+  
   # --- 0. Prepare data ---
- 
+  
   # Assume obesity_all_long is your original dataset with missing values
   # Convert h_id to factor for modeling later
   database$h_id <- as.factor(database$h_id)
- 
- 
- 
+  
+  
+  
   # Identify column positions in `database`
   start_col <- match("timepoint_0", names(database))
   end_col   <- match("cut_Toxo_4", names(database))
- 
+  
   # Optional sanity check
   start_col
   end_col
   names(database)[start_col:end_col]
- 
+  
   # Drop the entire block of columns
   database <- database[ , -c(start_col:end_col), drop = FALSE]
- 
- 
- 
+  
+  
+  
   # Generate an integer version of h_id that preserves unique IDs (required by 2l.pan)
-  imp_data <- database
+  imp_data <- database 
   imp_data$h_id_int <- as.integer(factor(database$h_id))
- 
- 
- 
- 
- 
- 
+  
+  
+  
+  
+  
+  
   # map the connections for further reference if needed
   mapping <- data.frame(
     original_id = levels(database$h_id),
     int_id = as.integer(factor(levels(database$h_id)))
-   
+    
   )
- 
- 
- 
+  
+  
+  
   # --- 1. Variables to impute ---
   # Only raw continuous measurements
-   vars_to_impute <- c("cheight", "cweight", "cabdo", "csubscap","ctriceps", "pre_bmi_c",
+   vars_to_impute <- c("cheight", "cweight", "cabdo", "csubscap","ctriceps", "pre_bmi_c", 
                        "urb_area_id", "smk_p", "edu_m_0", "ethn3_m", "m_age", "breastfed_ever", "preg_smk", "nursery_upto2years")
- 
- 
- 
+  
+  
+  
   # --- 2. Predictor variables ---
   # Exclude serology to avoid bias; include baseline/exogenous variables
   # Also include other anthropometrics to improve imputation
- 
- 
-  predicting_vars <-  c("age", "weight_zscore", "height_zscore", "bmi_zscore", "coh",  "sex",  "cbmi", "cheight", "cweight", "cabdo", "csubscap","ctriceps", "pre_bmi_c",
+  
+  
+  predicting_vars <-  c("age", "weight_zscore", "height_zscore", "bmi_zscore", "coh",  "sex",  "cbmi", "cheight", "cweight", "cabdo", "csubscap","ctriceps", "pre_bmi_c", 
                         "urb_area_id", "smk_p", "edu_m_0", "ethn3_m", "m_age", "breastfed_ever", "preg_smk", "nursery_upto2years")  
- 
- 
+  
+  
   sero_log_cols <- names(database)[
     str_detect(names(database), "^log10_.*_$") |
       names(database) == "log10_EBV_EAD"
   ]
- 
- 
- 
- 
+  
+  
+  
+  
   predicting_vars <- c(predicting_vars, sero_log_cols)
- 
- 
+  
+  
   # --- 3. Setup method vector ---
    meth <- make.method(imp_data)
    meth[vars_to_impute] <- "2l.pan"  # multilevel continuous imputation
@@ -401,8 +401,8 @@ selected_vars <- unique(c(cor_selected$var1, cor_selected$var2))
    
    
    
- 
- 
+  
+  
    
    
    
@@ -411,53 +411,53 @@ selected_vars <- unique(c(cor_selected$var1, cor_selected$var2))
    pred <- make.predictorMatrix(imp_data)
    pred[,] <- 0  # initialize
    
- 
- 
+  
+  
   # Include chosen predictors for each variable to impute
   for (var in vars_to_impute) {
     pred[var, predicting_vars] <- 1
   }
- 
- 
+  
+  
   # Random effects: clustering by household
   pred[vars_to_impute, "h_id_int"] <- -2
- 
- 
+  
+  
   # Longitudinal structure: timepoint as fixed effect
   pred[vars_to_impute, "age"] <- 1
- 
+  
   pred[vars_to_impute, sero_log_cols] <- 1
- 
- 
+  
+  
   # Prevent self-prediction
   diag(pred) <- 0
- 
- 
+  
+  
   # Exclude derived variables as predictors
   pred[, derived_vars] <- 0
- 
- 
- 
+  
+  
+  
   cat("\nPredictors for each target var (1 = used):\n")
   print(pred[vars_to_impute, c(predicting_vars, "h_id_int", "age")])
- 
- 
+  
+  
   # --- 5. Run multiple imputation ---
   # Increase number of imputations and iterations for stability
- 
- 
+  
+  
   # methods etc already defined:
   # meth, pred, imp_data, bounds_list
- 
+  
   post <- make.post(imp_data)
- 
+  
   post["cweight"] <- "imp[[j]][, i] <- pmin(pmax(imp[[j]][, i], 1.5), 90)"
   post["cheight"] <- "imp[[j]][, i] <- pmin(pmax(imp[[j]][, i], 30), 175)"
- 
+  
   post["weight_zscore"] <- "imp[[j]][, i] <- pmin(pmax(imp[[j]][, i], -5), 5)"
   post["height_zscore"] <- "imp[[j]][, i] <- pmin(pmax(imp[[j]][, i], -5), 5)"
   post["bmi_zscore"]    <- "imp[[j]][, i] <- pmin(pmax(imp[[j]][, i], -5), 5)"
- 
+  
   set.seed(123)
   imputed <- mice(
     imp_data,
@@ -467,47 +467,47 @@ selected_vars <- unique(c(cor_selected$var1, cor_selected$var2))
     maxit          = 50,
     post           = post
   )
- 
- 
+  
+  
   imputed_bckp <- imputed
- 
- 
- 
- 
-  ######### manipulation #########
+  
+  
+  
+  
+  ######### manipulation ######### 
   completed_data <- complete(imputed, "long") %>%
     group_by(.imp) %>%
     mutate(bmi_scaled = (cbmi - min(cbmi, na.rm = TRUE)) / (max(cbmi, na.rm = TRUE) - min(cbmi, na.rm = TRUE))) %>%
     ungroup()
- 
- 
+  
+  
   # extract all imputations in long form (including original .imp = 0)
   imp_long <- complete(imputed, action = "long", include = TRUE)
- 
+  
   # compute BMI per imputation
   imp_long <- imp_long %>%
     group_by(.imp) %>%
     mutate(cbmi = cweight / (cheight/100)^2) %>%   # if you need recalculation
     ungroup()
- 
+  
   # convert back to mids
   imputed <- as.mids(imp_long)
- 
- 
- 
- 
- 
- 
- 
+  
+  
+  
+  
+  
+  
+  
   imputed_long <- complete(imputed, action = "long", include = TRUE)
- 
+  
   # Compute bmi_scaled per imputation (including .imp = 0 to preserve structure)
   imputed_long <- imputed_long %>%
     group_by(.imp) %>%
     mutate(bmi_scaled = (cbmi - min(cbmi, na.rm = TRUE)) /
              (max(cbmi, na.rm = TRUE) - min(cbmi, na.rm = TRUE))) %>%
     ungroup()
- 
+  
   # Convert back to mids object safely
   imputed <- as.mids(imputed_long)
 
@@ -536,7 +536,7 @@ densityplot(imputed, ~ bmi_scaled)
 densityplot(imputed, ~ cbmi)
 densityplot(imputed, ~ cheight)
 densityplot(imputed, ~ cweight)
-#########  #########
+#########  ######### 
 
 
 
