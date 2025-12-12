@@ -2,6 +2,15 @@
 processed_list_bckp <- processed_list
 
 processed_list <- processed_list %>%
+  purrr::map(~ .x %>%
+               mutate(
+                 agecd_cgrowth = as.integer(round(age * 365))
+               )
+  )
+
+
+
+processed_list <- processed_list %>%
   map(~ clean_sex(.x))
 
 
@@ -185,26 +194,360 @@ pooled_all
 
 
 
+### updated cox
+library(dplyr)
+library(purrr)
+library(rlang)
+
+# ---------- 1) Build discrete-time (serology-interval) dataset ----------
+# One row per child per serology interval (e.g., 2→4, 4→7, 7→11),
+# event = 1 only for the first 0→1 transition; intervals after first event dropped.
+# Exposure (BMI etc.) taken as LAST anthropometry measurement at or before interval start.
+
+build_discrete_sero_intervals <- function(df, virus_var,
+                                          id_var = "h_id_int",
+                                          age_var = "age",
+                                          bmi_var = "bmi_scaled") {
+  id_sym   <- sym(id_var)
+  age_sym  <- sym(age_var)
+  virus_sym <- sym(virus_var)
+  bmi_sym  <- sym(bmi_var)
+  
+  # Helper: within a child's data, get last non-missing value of x at or before time t
+  last_before <- function(age_vec, x_vec, t) {
+    ok <- which(!is.na(x_vec) & !is.na(age_vec) & age_vec <= t)
+    if (length(ok) == 0) return(NA_real_)
+    x_vec[ok[which.max(age_vec[ok])]]
+  }
+  
+  df %>%
+    arrange(!!id_sym, !!age_sym) %>%
+    group_by(!!id_sym) %>%
+    group_modify(~{
+      d <- .x
+      
+      # serology observation times (only where status is observed, i.e., not NA)
+      sero_obs <- d %>%
+        filter(!is.na(!!virus_sym)) %>%
+        arrange(!!age_sym) %>%
+        select(!!age_sym, !!virus_sym) %>%
+        distinct()
+      
+      # need at least two observed serology points to form an interval
+      if (nrow(sero_obs) < 2) return(tibble())
+      
+      # restrict to incident risk: first observed status must be 0
+      if (sero_obs[[as_string(virus_sym)]][1] != 0) return(tibble())
+      
+      # build intervals between consecutive observed serology times
+      tstart <- sero_obs[[as_string(age_sym)]][-nrow(sero_obs)]
+      tstop  <- sero_obs[[as_string(age_sym)]][-1]
+      s0     <- sero_obs[[as_string(virus_sym)]][-nrow(sero_obs)]
+      s1     <- sero_obs[[as_string(virus_sym)]][-1]
+      
+      # event occurs in the interval where 0 -> 1 (first time only)
+      event_vec <- as.integer(s0 == 0 & s1 == 1)
+      
+      # keep intervals only up to and including the first event, if any
+      if (any(event_vec == 1)) {
+        first_event_idx <- which(event_vec == 1)[1]
+        keep <- seq_len(first_event_idx)
+      } else {
+        keep <- seq_along(event_vec)
+      }
+      
+      tstart <- tstart[keep]
+      tstop  <- tstop[keep]
+      event_vec <- event_vec[keep]
+      
+      # interval length for cloglog offset
+      dt <- pmax(tstop - tstart, 1e-8)
+      
+      # exposures at interval start: last anthropometry <= tstart
+      age_all <- d[[as_string(age_sym)]]
+      
+      bmi_all <- d[[as_string(bmi_sym)]]
+      bmi_at_start <- vapply(tstart, function(t) last_before(age_all, bmi_all, t), numeric(1))
+      
+      # keep fixed covariates from the child's data (assumed constant)
+      sex_val <- d$sex[which(!is.na(d$sex))[1]]
+      coh_val <- d$coh[which(!is.na(d$coh))[1]]
+      
+      tibble(
+        h_id_int = d[[as_string(id_sym)]][1],
+        tstart = tstart,
+        tstop  = tstop,
+        dt     = dt,
+        event  = event_vec,
+        bmi_scaled = bmi_at_start,
+        sex = sex_val,
+        coh = coh_val,
+        interval = seq_along(tstart)  # 1,2,3... within-child serology intervals
+      )
+    }) %>%
+    ungroup() %>%
+    filter(!is.na(bmi_scaled), !is.na(sex), !is.na(coh), dt > 0)
+}
+
+# ---------- 2) Fit discrete-time hazard model (cloglog) per imputation ----------
+fit_discrete_cloglog <- function(dat) {
+  # baseline hazard via interval factor + offset(log(dt)) for unequal interval lengths
+  glm(
+    event ~ bmi_scaled + sex + factor(coh) + factor(interval) + offset(log(dt)),
+    family = binomial(link = "cloglog"),
+    data = dat
+  )
+}
+
+# ---------- 3) Rubin pooling for a coefficient ----------
+pool_mi <- function(fit_list, coef_name = "bmi_scaled") {
+  fit_list <- Filter(Negate(is.null), fit_list)
+  if (length(fit_list) == 0) {
+    return(list(beta = NA_real_, se = NA_real_, HR = NA_real_, CI = c(NA_real_, NA_real_)))
+  }
+  
+  betas <- sapply(fit_list, function(fit) coef(fit)[coef_name])
+  vars  <- sapply(fit_list, function(fit) vcov(fit)[coef_name, coef_name])
+  
+  M <- length(betas)
+  q_bar <- mean(betas)
+  W <- mean(vars)
+  B <- if (M > 1) var(betas) else 0
+  T_var <- W + (1 + 1 / M) * B
+  
+  se <- sqrt(T_var)
+  HR <- exp(q_bar)
+  CI <- exp(q_bar + c(-1, 1) * 1.96 * se)
+  
+  list(beta = q_bar, se = se, HR = HR, CI = CI)
+}
+
+# ---------- 4) Run across viruses + imputations ----------
+run_discrete_for_virus <- function(processed_list, virus) {
+  # build per-imputation datasets
+  dat_list <- imap(processed_list, ~{
+    d <- build_discrete_sero_intervals(.x, virus_var = virus)
+    if (nrow(d) == 0) return(NULL)
+    d$.imp <- .y
+    d
+  })
+  
+  # fit per-imputation models
+  fit_list <- lapply(dat_list, function(d) {
+    if (is.null(d) || sum(d$event, na.rm = TRUE) == 0) return(NULL)
+    fit_discrete_cloglog(d)
+  })
+  
+  pooled <- pool_mi(fit_list, coef_name = "bmi_scaled")
+  
+  tibble(
+    virus = virus,
+    beta = pooled$beta,
+    se = pooled$se,
+    HR = pooled$HR,
+    CI_low = pooled$CI[1],
+    CI_high = pooled$CI[2]
+  )
+}
+
+virus_vars <- c(
+  "CMV_class_sero",
+  "EBV_class_sero",
+  "cut_Avd36_sero",
+  "cut_VZV_sero",
+  "cut_BK_sero",
+  "cut_JC_sero",
+  "cut_KI_sero",
+  "cut_WU_sero",
+  "cut_MCV_sero"
+)
+
+pooled_all_discrete <- map_dfr(virus_vars, ~run_discrete_for_virus(processed_list, .x))
+pooled_all_discrete
 
 
 
 
 
 
+#### by category
+library(dplyr)
+library(purrr)
+library(rlang)
 
+# ---------- Helper: collapse BMI categories to stable 3-level exposure ----------
+# You can tweak this mapping if you want to treat Thin separately.
+collapse_bmi3 <- function(x) {
+  case_when(
+    is.na(x) ~ NA_character_,
+    x %in% c("Normal") ~ "Normal",
+    x %in% c("Overweight") ~ "Overweight",
+    x %in% c("Obese") ~ "Obese",
+    # treat thin categories as Normal to avoid tiny cells (recommended here)
+    x %in% c("Thin", "Severely thin") ~ "Normal",
+    TRUE ~ NA_character_
+  )
+}
 
+# ---------- Build serology-interval dataset with BMI category at interval start ----------
+build_discrete_sero_intervals_bmicat <- function(df, virus_var,
+                                                 id_var = "h_id_int",
+                                                 age_var = "age",
+                                                 bmicat_var = "bmi_category") {
+  id_sym    <- sym(id_var)
+  age_sym   <- sym(age_var)
+  virus_sym <- sym(virus_var)
+  bmicat_sym <- sym(bmicat_var)
+  
+  last_before_chr <- function(age_vec, x_vec, t) {
+    ok <- which(!is.na(x_vec) & !is.na(age_vec) & age_vec <= t)
+    if (length(ok) == 0) return(NA_character_)
+    x_vec[ok[which.max(age_vec[ok])]]
+  }
+  
+  df %>%
+    arrange(!!id_sym, !!age_sym) %>%
+    group_by(!!id_sym) %>%
+    group_modify(~{
+      d <- .x
+      
+      sero_obs <- d %>%
+        filter(!is.na(!!virus_sym)) %>%
+        arrange(!!age_sym) %>%
+        select(!!age_sym, !!virus_sym) %>%
+        distinct()
+      
+      if (nrow(sero_obs) < 2) return(tibble())
+      if (sero_obs[[as_string(virus_sym)]][1] != 0) return(tibble())  # incident-only
+      
+      tstart <- sero_obs[[as_string(age_sym)]][-nrow(sero_obs)]
+      tstop  <- sero_obs[[as_string(age_sym)]][-1]
+      s0     <- sero_obs[[as_string(virus_sym)]][-nrow(sero_obs)]
+      s1     <- sero_obs[[as_string(virus_sym)]][-1]
+      
+      event_vec <- as.integer(s0 == 0 & s1 == 1)
+      
+      # keep up to first event
+      if (any(event_vec == 1)) {
+        first_event_idx <- which(event_vec == 1)[1]
+        keep <- seq_len(first_event_idx)
+      } else {
+        keep <- seq_along(event_vec)
+      }
+      
+      tstart <- tstart[keep]
+      tstop  <- tstop[keep]
+      event_vec <- event_vec[keep]
+      dt <- pmax(tstop - tstart, 1e-8)
+      
+      age_all <- d[[as_string(age_sym)]]
+      bmicat_all <- collapse_bmi3(d[[as_string(bmicat_sym)]])
+      bmicat_at_start <- vapply(tstart, function(t) last_before_chr(age_all, bmicat_all, t), character(1))
+      
+      sex_val <- d$sex[which(!is.na(d$sex))[1]]
+      coh_val <- d$coh[which(!is.na(d$coh))[1]]
+      
+      tibble(
+        h_id_int = d[[as_string(id_sym)]][1],
+        tstart = tstart,
+        tstop  = tstop,
+        dt     = dt,
+        event  = event_vec,
+        bmi_cat3 = bmicat_at_start,
+        sex = sex_val,
+        coh = coh_val,
+        interval = seq_along(tstart)
+      )
+    }) %>%
+    ungroup() %>%
+    mutate(
+      bmi_cat3 = factor(bmi_cat3, levels = c("Normal", "Overweight", "Obese"))
+    ) %>%
+    filter(!is.na(bmi_cat3), !is.na(sex), !is.na(coh), dt > 0)
+}
 
+# ---------- Fit discrete-time hazard model (cloglog) with BMI categories ----------
+fit_discrete_cloglog_bmicat <- function(dat) {
+  glm(
+    event ~ bmi_cat3 + sex + factor(coh) + factor(interval) + offset(log(dt)),
+    family = binomial(link = "cloglog"),
+    data = dat
+  )
+}
 
+# ---------- Pool multiple coefficients (Overweight, Obese vs Normal) across imputations ----------
+pool_mi_multi <- function(fit_list, coef_names) {
+  fit_list <- Filter(Negate(is.null), fit_list)
+  if (length(fit_list) == 0) {
+    return(tibble(term = coef_names, beta = NA_real_, se = NA_real_,
+                  HR = NA_real_, CI_low = NA_real_, CI_high = NA_real_))
+  }
+  
+  M <- length(fit_list)
+  
+  out <- lapply(coef_names, function(term) {
+    betas <- sapply(fit_list, function(fit) coef(fit)[term])
+    vars  <- sapply(fit_list, function(fit) vcov(fit)[term, term])
+    
+    q_bar <- mean(betas)
+    W <- mean(vars)
+    B <- if (M > 1) var(betas) else 0
+    T_var <- W + (1 + 1 / M) * B
+    
+    se <- sqrt(T_var)
+    HR <- exp(q_bar)
+    CI <- exp(q_bar + c(-1, 1) * 1.96 * se)
+    
+    tibble(term = term, beta = q_bar, se = se, HR = HR, CI_low = CI[1], CI_high = CI[2])
+  })
+  
+  bind_rows(out)
+}
 
+# ---------- Run across viruses ----------
+library(survival)
 
+virus_vars <- c(
+  "CMV_class_sero",
+  "EBV_class_sero",
+  "cut_Avd36_sero",
+  "cut_VZV_sero",
+  "cut_BK_sero",
+  "cut_JC_sero",
+  "cut_KI_sero",
+  "cut_WU_sero",
+  "cut_MCV_sero"
+)
 
+run_discrete_bmicat_for_virus <- function(virus) {
+  dat_list <- imap(processed_list, ~{
+    d <- build_discrete_sero_intervals_bmicat(.x, virus_var = virus)
+    if (nrow(d) == 0) return(NULL)
+    d$.imp <- .y
+    d
+  })
+  
+  fit_list <- lapply(dat_list, function(d) {
+    if (is.null(d) || sum(d$event, na.rm = TRUE) == 0) return(NULL)
+    fit_discrete_cloglog_bmicat(d)
+  })
+  
+  pooled <- pool_mi_multi(fit_list, coef_names = c("bmi_cat3Overweight", "bmi_cat3Obese")) %>%
+    mutate(
+      virus = virus,
+      contrast = case_when(
+        term == "bmi_cat3Overweight" ~ "Overweight vs Normal",
+        term == "bmi_cat3Obese"      ~ "Obese vs Normal",
+        TRUE ~ term
+      )
+    ) %>%
+    select(virus, contrast, beta, se, HR, CI_low, CI_high)
+  
+  pooled
+}
 
-
-
-
-
-
-
+pooled_all_bmicat <- map_dfr(virus_vars, run_discrete_bmicat_for_virus)
+pooled_all_bmicat
 
 
 
