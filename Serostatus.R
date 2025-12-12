@@ -13,23 +13,23 @@ serostatus_all_long <- serostatus_all_long %>%
 
 
 propagate_sero_nn_multi <- function(anthro, sero, virus_vec) {
- 
+  
   anthro_out <- anthro  # start with the input dataset
- 
+  
   for (virus in virus_vec) {
-   
+    
     sero_col <- rep(NA_integer_, nrow(anthro))  # empty vector for this virus
     sero_split <- split(sero, sero$h_id)
-   
+    
     for(i in seq_len(nrow(anthro))) {
-     
+      
       h <- anthro$h_id[i]
       age_i <- anthro$age[i]
-     
+      
       if(!h %in% names(sero_split)) next
       s <- sero_split[[as.character(h)]]
       s_status <- s[[virus]]
-     
+      
       prev_idx <- which(s$age <= age_i)
       if(length(prev_idx) > 0) {
         prev_row <- prev_idx[which.max(s$age[prev_idx])]
@@ -38,7 +38,7 @@ propagate_sero_nn_multi <- function(anthro, sero, virus_vec) {
       } else {
         prev_status <- NA
       }
-     
+      
       next_idx <- which(s$age >= age_i)
       if(length(next_idx) > 0) {
         next_row <- next_idx[which.min(s$age[next_idx])]
@@ -47,7 +47,7 @@ propagate_sero_nn_multi <- function(anthro, sero, virus_vec) {
       } else {
         next_status <- NA
       }
-     
+      
       if(!is.na(prev_status) & !is.na(next_status)) {
         if(prev_status == next_status) {
           sero_col[i] <- prev_status
@@ -61,11 +61,11 @@ propagate_sero_nn_multi <- function(anthro, sero, virus_vec) {
         sero_col[i] <- ifelse(next_status == 0, 0L, NA_integer_)
       }
     }
-   
+    
     # Attach the new column to the output dataset
     anthro_out[[paste0(virus, "_sero")]] <- sero_col
   }
- 
+  
   return(anthro_out)  # just one dataset with 9 new columns
 }
 
@@ -90,7 +90,7 @@ processed_list <- lapply(imputed_list, function(df) {
 
 
 
-
+processed_list_bckp <- processed_list
 
 
 
@@ -124,19 +124,19 @@ processed_list <- lapply(
     cbmi_min <- min(df$cbmi, na.rm = TRUE)
     cbmi_max <- max(df$cbmi, na.rm = TRUE)
     denom    <- cbmi_max - cbmi_min
-   
+    
     df$bmi_scaled <- if (is.finite(denom) && denom > 0) {
       (df$cbmi - cbmi_min) / denom
     } else {
       NA_real_
     }
-   
+    
     df
   }
 )
 
 ##
-processed_list_20 <- lapply(processed_list, function(df) df[1:20, , drop = FALSE])
+
 
 saveRDS(processed_list, "processed_list.rds")
 saveRDS(anthro_long_sero_wide, "anthro_long_sero_wide.rds")
@@ -319,7 +319,7 @@ fit_logit_for_outcome <- function(outcome_name, data_list) {
   # For each imputed dataset, fit:
   #   outcome ~ bmi_scaled + sex + coh + age   (logistic)
   lapply(data_list, function(df) {
-   
+    
     # Drop rows with missing outcome or key covariates
     df2 <- df %>%
       filter(
@@ -329,12 +329,12 @@ fit_logit_for_outcome <- function(outcome_name, data_list) {
         !is.na(coh),
         !is.na(age)
       )
-   
+    
     # If no variation in outcome, model is not estimable
     if (dplyr::n_distinct(df2[[outcome_name]]) < 2) {
       return(NULL)
     }
-   
+    
     # Fit logistic regression
     tryCatch(
       glm(
@@ -353,7 +353,7 @@ fit_logit_for_outcome <- function(outcome_name, data_list) {
 pool_bmi_scaled_logit <- function(glm_list, outcome_name) {
   # Remove failed / NULL fits
   glm_list <- glm_list[!vapply(glm_list, is.null, logical(1))]
- 
+  
   if (length(glm_list) <= 1) {
     return(
       data.frame(
@@ -370,22 +370,22 @@ pool_bmi_scaled_logit <- function(glm_list, outcome_name) {
       )
     )
   }
- 
+  
   # Extract beta and variance of bmi_scaled
   beta_vec <- sapply(glm_list, function(fit) {
     coef(fit)[["bmi_scaled"]]
   })
- 
+  
   var_vec <- sapply(glm_list, function(fit) {
     vcov(fit)["bmi_scaled", "bmi_scaled"]
   })
- 
+  
   # Drop NAs
   keep <- !is.na(beta_vec) & !is.na(var_vec)
   beta_vec <- beta_vec[keep]
   var_vec  <- var_vec[keep]
   m <- length(beta_vec)
- 
+  
   if (m <= 1) {
     return(
       data.frame(
@@ -402,27 +402,27 @@ pool_bmi_scaled_logit <- function(glm_list, outcome_name) {
       )
     )
   }
- 
+  
   # Rubin's rules for logistic regression (same math as for linear/Cox beta)
   Q_bar <- mean(beta_vec)   # pooled beta
   W     <- mean(var_vec)    # within-imputation variance
   B     <- var(beta_vec)    # between-imputation variance
   T_var <- W + (1 + 1/m) * B
   se    <- sqrt(T_var)
- 
+  
   # Barnard–Rubin df
   df <- (m - 1) * (1 + W / ((1 + 1/m) * B))^2
- 
+  
   # z (or t) statistic and p-value
   z_val <- Q_bar / se
   # With large m, normal approx is fine, but keep df-based t for consistency
   p_val <- 2 * pt(-abs(z_val), df = df)
- 
+  
   # Odds ratios and 95% CI
   OR    <- exp(Q_bar)
   lower <- exp(Q_bar - qt(0.975, df) * se)
   upper <- exp(Q_bar + qt(0.975, df) * se)
- 
+  
   data.frame(
     outcome   = outcome_name,
     term      = "bmi_scaled",
@@ -480,7 +480,7 @@ hr_long <- bind_rows(
     out_name <- outcome_vars[j]
     glm_list <- glm_lists_all[[j]]
     glm_list <- glm_list[!vapply(glm_list, is.null, logical(1))]
-   
+    
     if (length(glm_list) == 0) {
       return(data.frame(
         outcome = character(0),
@@ -488,11 +488,11 @@ hr_long <- bind_rows(
         OR      = numeric(0)
       ))
     }
-   
+    
     OR_each <- sapply(glm_list, function(fit) {
       exp(coef(fit)[["bmi_scaled"]])
     })
-   
+    
     data.frame(
       outcome = out_name,
       imp     = seq_along(OR_each),
@@ -512,7 +512,7 @@ ggplot(hr_long %>% filter(!is.na(OR)),
     y = "Odds Ratio"
   )
 
- 
+
 
 
 
