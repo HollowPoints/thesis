@@ -68,11 +68,9 @@ assign_anthroplus_scores <- function(df) {
   return(df)
 }
 
+##############
 
 
-
-# function that finds and removes implausible values (±5 SDs) removes the whole row if all z scores are implausible values. 
-# Creates a exclusion log for each dataset with h_id and values excluded.
 
 clean_zscores <- function(df) {
   # Capture original object name as string
@@ -129,8 +127,23 @@ clean_zscores <- function(df) {
 
 
 
-####################################################################################################
-# obsolete 
+
+
+
+
+
+
+######################################################
+### obsolete
+
+
+
+
+
+
+# function that finds and removes implausible values (±5 SDs) removes the whole row if all z scores are implausible values. 
+# Creates a exclusion log for each dataset with h_id and values excluded.
+
 clean_zscores <- function(df) {
   # Capture original object name as string
   df_name <- deparse(substitute(df))
@@ -189,8 +202,13 @@ clean_zscores <- function(df) {
   assign(paste0("exclusionlog_", df_name), exclusion_log, envir = .GlobalEnv)
 }
 
-####################################################################################################
-# obsolete 
+
+
+
+######################################################
+### obsolete
+
+
 
 
 # function to classify children as Normal, Overweight, Obese based on z score , depending on age < 5 and age > 5
@@ -673,3 +691,9 @@ run_bidirectional_models_table <- function(data, virus_vars) {
   
   return(results_table)
 }
+
+
+
+
+
+
