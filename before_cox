@@ -2,6 +2,10 @@
 processed_list_bckp <- processed_list
 
 processed_list <- processed_list %>%
+  map(~ clean_sex(.x))
+
+
+processed_list <- processed_list %>%
   map(~ .x %>%
         assign_anthro_scores() %>%
         assign_anthroplus_scores() %>%
@@ -24,122 +28,58 @@ processed_list <- processed_list %>%
 
 
 
-
-
-
-
 library(dplyr)
 library(rlang)
 
-build_surv_data <- function(df, virus_var, exposure_timepoint = 1) {
+build_surv_tv <- function(df, virus_var) {
   virus_sym <- sym(virus_var)
   
-  # 1. Pick baseline (4–6 years window, timepoint == 2) and choose the *latest* age in that window
-  baseline <- df %>%
-    filter(timepoint == exposure_timepoint) %>%
+  # 1. Compute event_age and censor_age per child
+  event_info <- df %>%
     arrange(h_id_int, age) %>%
     group_by(h_id_int) %>%
-    slice_tail(n = 1) %>%              # oldest measurement within 4–6 years
-    ungroup() %>%
-    mutate(
-      age_bmi          = age,
-      virus_baseline   = !!virus_sym    # serostatus at baseline
-    )
-  
-  # 2. Keep only children who are seronegative at baseline for that virus
-  baseline_eligible <- baseline %>%
-    filter(virus_baseline == 0) %>%
-    select(
-      h_id_int,
-      age_bmi,
-      bmi_scaled,
-      bmi_category,
-      whtr,
-      central_obesity,
-      sex,
-      coh
-    )
-  
-  # If no eligible kids, return empty df
-  if (nrow(baseline_eligible) == 0) {
-    return(
-      tibble(
-        h_id_int = integer(),
-        age_start = numeric(),
-        age_end = numeric(),
-        event = integer(),
-        bmi_scaled = numeric(),
-        bmi_category = character(),
-        whtr = numeric(),
-        central_obesity = logical(),
-        sex = character(),
-        coh = numeric(),
-        age_bmi = numeric()
-      )
-    )
-  }
-  
-  # 3. Restrict full longitudinal data to these children, and to ages >= baseline age
-  df_post <- df %>%
-    inner_join(baseline_eligible, by = "h_id_int", suffix = c("", "_base")) %>%
-    filter(age >= age_bmi)             # left truncation at BMI age
-  
-  # 4. Collapse to one row per child: start, end, event + exposures/covariates
-  surv_df <- df_post %>%
-    group_by(h_id_int) %>%
     summarise(
-      age_start = first(age_bmi),
-      age_end = {
-        # earliest age with seroconversion after baseline
-        event_ages <- age[ (!!virus_sym) == 1 & !is.na(!!virus_sym) ]
-        if (length(event_ages) > 0) {
-          min(event_ages, na.rm = TRUE)
-        } else {
-          max(age, na.rm = TRUE)       # censor at last observed age
-        }
+      first_age    = first(age),
+      event_age    = {
+        ages <- age[ (!!virus_sym) == 1 & !is.na(!!virus_sym) ]
+        if (length(ages) > 0) min(ages) else NA_real_
       },
-      event = as.integer(any( (!!virus_sym) == 1, na.rm = TRUE)),
-      
-      bmi_scaled      = first(bmi_scaled),
-      bmi_category    = first(bmi_category),
-      whtr            = first(whtr),
-      central_obesity = first(central_obesity),
-      sex             = first(sex),
-      coh             = first(coh),
-      age_bmi         = first(age_bmi),
+      censor_age   = {
+        ages <- age[ !is.na(!!virus_sym) ]
+        if (length(ages) > 0) max(ages) else NA_real_
+      },
+      baseline_sero = first(!!virus_sym),
       .groups = "drop"
     ) %>%
-    # guard against degenerate cases
-    filter(age_end > age_start)
+    # keep only children who are seronegative at first observation
+    filter(baseline_sero == 0, !is.na(censor_age))
   
-  surv_df
+  # 2. Restrict df to eligible children
+  df_elig <- df %>%
+    inner_join(event_info, by = "h_id_int")
+  
+  # 3. Build time intervals per child
+  tv_df <- df_elig %>%
+    arrange(h_id_int, age) %>%
+    group_by(h_id_int) %>%
+    mutate(
+      tstart   = age,
+      tstop_raw = lead(age),
+      # last interval ends at censor_age
+      tstop_raw = if_else(is.na(tstop_raw), censor_age, tstop_raw),
+      # truncate at censor age
+      tstop = pmin(tstop_raw, censor_age),
+      # event occurs in the interval that contains event_age
+      event = as.integer(!is.na(event_age) &
+                           event_age >= tstart &
+                           event_age < tstop)
+    ) %>%
+    ungroup() %>%
+    # keep only proper intervals
+    filter(tstop > tstart)
+  
+  tv_df
 }
-
-
-
-virus <- "cut_Avd36_sero"
-
-surv_list_ebv <- processed_list %>%
-  purrr::imap(~ {
-    df_surv <- build_surv_data(.x, virus_var = virus, exposure_timepoint = 2)
-    df_surv$.imp <- .y   # track imputation index
-    df_surv
-  })
-
-# One big long data frame if needed
-surv_ebv_long <- bind_rows(surv_list_ebv)
-
-
-library(survival)
-
-cox_formula_min <- Surv(age_start, age_end, event) ~
-  bmi_scaled + sex + factor(coh) + age_bmi
-
-fit_list_ebv <- lapply(surv_list_ebv, function(dat) {
-  coxph(cox_formula_min, data = dat)
-})
-
-
 
 
 
@@ -147,15 +87,18 @@ fit_list_ebv <- lapply(surv_list_ebv, function(dat) {
 pool_bmi_effect <- function(fit_list, coef_name = "bmi_scaled") {
   M <- length(fit_list)
   
+  # extract coefficients
   betas <- sapply(fit_list, function(fit) {
     coef(fit)[coef_name]
   })
   
+  # extract variances
   vars <- sapply(fit_list, function(fit) {
     vcov(fit)[coef_name, coef_name]
   })
   
-  q_bar <- mean(betas)                # average beta
+  # Rubin pooling
+  q_bar <- mean(betas)                # pooled beta
   W     <- mean(vars)                 # within-imputation variance
   B     <- var(betas)                 # between-imputation variance
   T_var <- W + (1 + 1 / M) * B        # total variance
@@ -172,8 +115,88 @@ pool_bmi_effect <- function(fit_list, coef_name = "bmi_scaled") {
   )
 }
 
-pooled_ebv_min <- pool_bmi_effect(fit_list_ebv, coef_name = "bmi_scaled")
-pooled_ebv_min
+
+
+
+
+library(purrr)
+library(dplyr)
+library(survival)
+
+virus_vars <- c(
+  "CMV_class_sero",
+  "EBV_class_sero",
+  "cut_Avd36_sero",
+  "cut_VZV_sero",
+  "cut_BK_sero",
+  "cut_JC_sero",
+  "cut_KI_sero",
+  "cut_WU_sero",
+  "cut_MCV_sero"
+)
+
+run_cox_for_virus <- function(virus) {
+  # build time-varying data for each imputed dataset
+  surv_list <- processed_list %>%
+    imap(~ {
+      df_tv <- build_surv_tv(.x, virus_var = virus)
+      df_tv$.imp <- .y
+      df_tv
+    })
+  
+  # if some imputations have zero eligible data, drop them
+  surv_list <- surv_list[lengths(surv_list) > 0]
+  if (length(surv_list) == 0) {
+    return(tibble(
+      virus = virus,
+      beta  = NA_real_,
+      se    = NA_real_,
+      HR    = NA_real_,
+      CI_low  = NA_real_,
+      CI_high = NA_real_
+    ))
+  }
+  
+  # fit Cox in each imputation
+  cox_formula_min_tv <- Surv(tstart, tstop, event) ~
+    bmi_scaled + sex + factor(coh)
+  
+  fit_list <- lapply(surv_list, function(dat) {
+    coxph(cox_formula_min_tv, data = dat)
+  })
+  
+  pooled <- pool_bmi_effect(fit_list, coef_name = "bmi_scaled")
+  
+  tibble(
+    virus   = virus,
+    beta    = pooled$beta,
+    se      = pooled$se,
+    HR      = pooled$HR,
+    CI_low  = pooled$CI[1],
+    CI_high = pooled$CI[2]
+  )
+}
+
+pooled_all <- map_dfr(virus_vars, run_cox_for_virus)
+pooled_all
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
